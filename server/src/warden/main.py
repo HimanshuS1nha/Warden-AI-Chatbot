@@ -1,6 +1,10 @@
 from fastapi import FastAPI
 
+from warden.routers import auth
+
 app = FastAPI(title="Warden")
+
+app.include_router(auth.router)
 
 
 @app.get("/")
