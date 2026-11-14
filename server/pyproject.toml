@@ -6,6 +6,7 @@ readme = "README.md"
 authors = [{ name = "Himanshu Sinha" }]
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "fastapi[standard]>=0.162.7",
     "pydantic-settings>=2.16.3",

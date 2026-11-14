@@ -1,7 +1,7 @@
 from collections.abc import AsyncGenerator
 from datetime import datetime
 
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -18,6 +18,18 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 class Base(DeclarativeBase):
+    # Give every constraint and index a predictable name so Alembic can
+    # detect, alter and drop them in later migrations.
+    metadata = MetaData(
+        naming_convention={
+            "ix": "ix_%(column_0_label)s",
+            "uq": "uq_%(table_name)s_%(column_0_name)s",
+            "ck": "ck_%(table_name)s_%(constraint_name)s",
+            "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+            "pk": "pk_%(table_name)s",
+        }
+    )
+
     # Load server-generated values (timestamps) right after INSERT/UPDATE so
     # reading them later doesn't trigger a lazy load, which fails under async.
     __mapper_args__ = {"eager_defaults": True}
