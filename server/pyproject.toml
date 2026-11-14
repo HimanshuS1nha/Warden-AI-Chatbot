@@ -3,15 +3,13 @@ name = "warden"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-authors = [
-    { name = "Himanshu Sinha", email = "ashusinha1904@gmail.com" }
-]
+authors = [{ name = "Himanshu Sinha" }]
 requires-python = ">=3.12"
-dependencies = []
-
-[project.scripts]
-warden = "warden:main"
+dependencies = ["fastapi[standard]>=0.162.7"]
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]
 build-backend = "uv_build"
+
+[tool.fastapi]
+entrypoint = "warden.main:app"
