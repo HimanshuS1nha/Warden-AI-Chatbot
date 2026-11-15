@@ -2,11 +2,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from warden.core.config import get_settings
+from warden.core.exceptions import register_exception_handlers
 from warden.routers import auth
 
 settings = get_settings()
 
 app = FastAPI(title="Warden")
+
+register_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,
