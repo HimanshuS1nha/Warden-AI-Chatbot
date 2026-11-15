@@ -1,8 +1,10 @@
+import hmac
 import ipaddress
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +15,7 @@ from warden.core.hashing import (
     verify_and_update_password,
     verify_password,
 )
-from warden.core.jwt import create_access_token, create_refresh_token
+from warden.core.jwt import create_access_token, create_refresh_token, decode_token
 from warden.models import UserModel, UserSessionModel
 from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
 from warden.schemas.user import UserResponse
@@ -33,6 +35,12 @@ def email_exists_error() -> HTTPException:
 def invalid_credentials_error() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
+    )
+
+
+def invalid_refresh_token_error() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
     )
 
 
@@ -111,6 +119,61 @@ async def login_user(
         user=UserResponse.model_validate(user),
         access_token=access_token,
         refresh_token=refresh_token,
+        refresh_expires_at=refresh_expires_at,
+    )
+
+
+
+async def refresh_session(db: AsyncSession, refresh_token: str | None) -> LoginResult:
+    if not refresh_token:
+        raise invalid_refresh_token_error()
+
+    payload = decode_token(refresh_token, "refresh")
+    now = datetime.now(UTC)
+
+    # Lock the row so two refreshes with the same token can't both rotate it.
+    session = await db.scalar(
+        select(UserSessionModel)
+        .where(
+            UserSessionModel.id == payload.session_id,
+            UserSessionModel.user_id == payload.user_id,
+        )
+        .with_for_update()
+    )
+    if session is None or session.revoked_at is not None or session.expires_at <= now:
+        raise invalid_refresh_token_error()
+
+    if not hmac.compare_digest(session.refresh_token_hash, hash_token(refresh_token)):
+        # A correctly signed token for this session that isn't the latest one
+        # means an old token was used again. Either it was stolen or someone
+        # is replaying it, so end every session for this user.
+        await db.execute(
+            update(UserSessionModel)
+            .where(
+                UserSessionModel.user_id == session.user_id,
+                UserSessionModel.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
+        await db.commit()
+        raise invalid_refresh_token_error()
+
+    user = await db.get(UserModel, session.user_id)
+    if user is None:
+        raise invalid_refresh_token_error()
+
+    access_token = create_access_token(user.id, session.id)
+    new_refresh_token, refresh_expires_at = create_refresh_token(user.id, session.id)
+
+    session.refresh_token_hash = hash_token(new_refresh_token)
+    session.expires_at = refresh_expires_at
+    session.last_used_at = now
+    await db.commit()
+
+    return LoginResult(
+        user=UserResponse.model_validate(user),
+        access_token=access_token,
+        refresh_token=new_refresh_token,
         refresh_expires_at=refresh_expires_at,
     )
 

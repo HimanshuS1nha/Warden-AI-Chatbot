@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Request, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Cookie, Request, Response, status
 
 from warden.core.config import get_settings
 from warden.core.cookies import (
@@ -6,10 +8,10 @@ from warden.core.cookies import (
     REFRESH_TOKEN_COOKIE,
     REFRESH_TOKEN_COOKIE_PATH,
 )
-from warden.core.dependencies import DbSession
+from warden.core.dependencies import CurrentUser, DbSession
 from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
 from warden.schemas.user import UserResponse
-from warden.services.auth import login_user, register_user
+from warden.services.auth import login_user, refresh_session, register_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -31,6 +33,23 @@ async def login(
     )
     _set_auth_cookies(response, result)
     return result.user
+
+
+
+@router.post("/refresh")
+async def refresh(
+    response: Response,
+    db: DbSession,
+    refresh_token: Annotated[str | None, Cookie(alias=REFRESH_TOKEN_COOKIE)] = None,
+) -> UserResponse:
+    result = await refresh_session(db, refresh_token)
+    _set_auth_cookies(response, result)
+    return result.user
+
+
+@router.get("/me")
+async def me(user: CurrentUser) -> UserResponse:
+    return user
 
 
 def _set_auth_cookies(response: Response, result: LoginResult) -> None:
