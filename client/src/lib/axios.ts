@@ -1,4 +1,4 @@
-import axiosLib, { AxiosError, type InternalAxiosRequestConfig } from "axios";
+import { create, AxiosError, type InternalAxiosRequestConfig } from "axios";
 
 import { API_ROUTES } from "@/constants/api-routes";
 
@@ -10,7 +10,7 @@ declare module "axios" {
   }
 }
 
-export const axios = axiosLib.create({
+export const axios = create({
   baseURL: import.meta.env.VITE_API_URL,
   // Auth tokens live in httpOnly cookies; send them on cross-origin requests.
   withCredentials: true,
