@@ -1,13 +1,56 @@
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, Response, status
 
+from warden.core.config import get_settings
 from warden.core.dependencies import DbSession
-from warden.schemas.auth import RegisterRequest
+from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
 from warden.schemas.user import UserResponse
-from warden.services.auth import register_user
+from warden.services.auth import login_user, register_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+ACCESS_TOKEN_COOKIE = "access_token"
+REFRESH_TOKEN_COOKIE = "refresh_token"
+# The refresh token is only sent to auth routes (refresh, logout), not to
+# every API call.
+REFRESH_TOKEN_COOKIE_PATH = "/api/auth"
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(data: RegisterRequest, db: DbSession) -> UserResponse:
-    user = await register_user(db, data)
-    return UserResponse.model_validate(user)
+    return await register_user(db, data)
+
+
+@router.post("/login")
+async def login(
+    data: LoginRequest, request: Request, response: Response, db: DbSession
+) -> UserResponse:
+    result = await login_user(
+        db,
+        data,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    _set_auth_cookies(response, result)
+    return result.user
+
+
+def _set_auth_cookies(response: Response, result: LoginResult) -> None:
+    settings = get_settings()
+    response.set_cookie(
+        ACCESS_TOKEN_COOKIE,
+        result.access_token,
+        max_age=settings.access_token_expire_minutes * 60,
+        path="/",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
+    response.set_cookie(
+        REFRESH_TOKEN_COOKIE,
+        result.refresh_token,
+        max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
+        path=REFRESH_TOKEN_COOKIE_PATH,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
