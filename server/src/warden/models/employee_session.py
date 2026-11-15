@@ -5,14 +5,13 @@ from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Mapped, mapped_column
 
-from warden.core.database import Base
+from warden.core.database import Base, UUIDPrimaryKey
 
 
-class EmployeeSessionModel(Base):
+class EmployeeSessionModel(UUIDPrimaryKey, Base):
     __tablename__ = "employee_sessions"
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    employee_id: Mapped[int] = mapped_column(
+    employee_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("employees.id", ondelete="CASCADE"), index=True
     )
     # SHA-256 hex digest of the refresh token. The raw token is never stored.

@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
@@ -22,10 +23,10 @@ class CurrentUser:
     their first argument and scope every query by it.
     """
 
-    employee_id: int
+    employee_id: uuid.UUID
     role: Role
-    manager_id: int | None
-    department_id: int
+    manager_id: uuid.UUID | None
+    department_id: uuid.UUID
     name: str
 
 

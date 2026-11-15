@@ -1,11 +1,11 @@
 import hmac
 import ipaddress
-import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid_utils.compat import uuid7
 
 from warden.core.hashing import (
     hash_token,
@@ -67,7 +67,7 @@ async def login_user(
         # Stored hash used older argon2 settings; save the upgraded one.
         employee.password_hash = new_hash
 
-    session_id = uuid.uuid4()
+    session_id = uuid7()
     access_token = create_access_token(employee.id, session_id)
     refresh_token, refresh_expires_at = create_refresh_token(employee.id, session_id)
 
