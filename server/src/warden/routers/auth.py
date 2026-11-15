@@ -1,18 +1,17 @@
 from fastapi import APIRouter, Request, Response, status
 
 from warden.core.config import get_settings
+from warden.core.cookies import (
+    ACCESS_TOKEN_COOKIE,
+    REFRESH_TOKEN_COOKIE,
+    REFRESH_TOKEN_COOKIE_PATH,
+)
 from warden.core.dependencies import DbSession
 from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
 from warden.schemas.user import UserResponse
 from warden.services.auth import login_user, register_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-ACCESS_TOKEN_COOKIE = "access_token"
-REFRESH_TOKEN_COOKIE = "refresh_token"
-# The refresh token is only sent to auth routes (refresh, logout), not to
-# every API call.
-REFRESH_TOKEN_COOKIE_PATH = "/api/auth"
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
