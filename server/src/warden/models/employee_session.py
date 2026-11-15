@@ -8,12 +8,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 from warden.core.database import Base
 
 
-class UserSessionModel(Base):
-    __tablename__ = "user_sessions"
+class EmployeeSessionModel(Base):
+    __tablename__ = "employee_sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    employee_id: Mapped[int] = mapped_column(
+        ForeignKey("employees.id", ondelete="CASCADE"), index=True
     )
     # SHA-256 hex digest of the refresh token. The raw token is never stored.
     refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True)

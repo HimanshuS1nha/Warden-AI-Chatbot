@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -8,16 +9,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from warden.core.cookies import ACCESS_TOKEN_COOKIE
 from warden.core.database import get_db
 from warden.core.jwt import decode_token
-from warden.models import UserModel, UserSessionModel
-from warden.schemas.user import UserResponse
+from warden.models import EmployeeModel, EmployeeSessionModel, Role
 
 DbSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+@dataclass(frozen=True)
+class CurrentUser:
+    """The authenticated employee for this request.
+
+    Built only from the session cookie and the database. Services take it as
+    their first argument and scope every query by it.
+    """
+
+    employee_id: int
+    role: Role
+    manager_id: int | None
+    department_id: int
+    name: str
 
 
 async def get_current_user(
     db: DbSession,
     access_token: Annotated[str | None, Cookie(alias=ACCESS_TOKEN_COOKIE)] = None,
-) -> UserResponse:
+) -> CurrentUser:
     unauthorized = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
     )
@@ -26,23 +41,31 @@ async def get_current_user(
 
     payload = decode_token(access_token, "access")
 
-    # Load the user only if the session the token was issued for is still
+    # Load the employee only if the session the token was issued for is still
     # active, so logout and revocation take effect right away instead of
-    # when the access token expires.
-    user = await db.scalar(
-        select(UserModel)
-        .join(UserSessionModel, UserSessionModel.user_id == UserModel.id)
+    # when the access token expires. Role and manager come from this row, not
+    # the token, so a role change or deactivation applies on the next request.
+    employee = await db.scalar(
+        select(EmployeeModel)
+        .join(EmployeeSessionModel, EmployeeSessionModel.employee_id == EmployeeModel.id)
         .where(
-            UserModel.id == payload.user_id,
-            UserSessionModel.id == payload.session_id,
-            UserSessionModel.revoked_at.is_(None),
-            UserSessionModel.expires_at > datetime.now(UTC),
+            EmployeeModel.id == payload.employee_id,
+            EmployeeModel.is_active.is_(True),
+            EmployeeSessionModel.id == payload.session_id,
+            EmployeeSessionModel.revoked_at.is_(None),
+            EmployeeSessionModel.expires_at > datetime.now(UTC),
         )
     )
-    if user is None:
+    if employee is None:
         raise unauthorized
 
-    return UserResponse.model_validate(user)
+    return CurrentUser(
+        employee_id=employee.id,
+        role=employee.role,
+        manager_id=employee.manager_id,
+        department_id=employee.department_id,
+        name=employee.name,
+    )
 
 
-CurrentUser = Annotated[UserResponse, Depends(get_current_user)]
+CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]

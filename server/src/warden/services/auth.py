@@ -5,11 +5,9 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from warden.core.hashing import (
-    hash_password,
     hash_token,
     password_hash,
     verify_and_update_password,
@@ -22,9 +20,9 @@ from warden.core.jwt import (
     create_refresh_token,
     decode_token,
 )
-from warden.models import UserModel, UserSessionModel
-from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
-from warden.schemas.user import UserResponse
+from warden.models import EmployeeModel, EmployeeSessionModel
+from warden.schemas.auth import LoginRequest, LoginResult
+from warden.schemas.employee import EmployeeResponse
 
 # Checked against when the email doesn't exist, so a login for an unknown
 # email takes as long as one with a wrong password and doesn't reveal which
@@ -32,10 +30,6 @@ from warden.schemas.user import UserResponse
 _DUMMY_PASSWORD_HASH = password_hash.hash("dummy-password-for-timing")
 
 _MAX_USER_AGENT_LENGTH = 512
-
-
-def email_exists_error() -> HTTPException:
-    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already exists")
 
 
 def invalid_credentials_error() -> HTTPException:
@@ -50,35 +44,6 @@ def invalid_refresh_token_error() -> HTTPException:
     )
 
 
-async def register_user(db: AsyncSession, data: RegisterRequest) -> UserResponse:
-    email = data.email.strip().lower()
-
-    existing = await db.scalar(select(UserModel.id).where(UserModel.email == email))
-    if existing is not None:
-        raise email_exists_error()
-
-    user = UserModel(
-        name=data.name,
-        email=email,
-        password_hash=await hash_password(data.password),
-    )
-
-    db.add(user)
-    try:
-        await db.commit()
-    except IntegrityError as exc:
-        # Two signups with the same email at once: the unique index catches
-        # the one that loses the race.
-        await db.rollback()
-        raise email_exists_error() from exc
-
-    # TODO: generate an OTP for email verification, store it hashed with an
-    # expiry, and add a verify endpoint that sets email_verified_at.
-    # TODO: send the OTP to the user's email once an email provider is wired up.
-
-    return UserResponse.model_validate(user)
-
-
 async def login_user(
     db: AsyncSession,
     data: LoginRequest,
@@ -86,33 +51,30 @@ async def login_user(
     ip_address: str | None,
 ) -> LoginResult:
     email = data.email.strip().lower()
-    user = await db.scalar(select(UserModel).where(UserModel.email == email))
+    employee = await db.scalar(select(EmployeeModel).where(EmployeeModel.email == email))
 
-    if user is None:
+    if employee is None:
         await verify_password(data.password, _DUMMY_PASSWORD_HASH)
         raise invalid_credentials_error()
 
-    is_valid, new_hash = await verify_and_update_password(data.password, user.password_hash)
-    if not is_valid:
+    is_valid, new_hash = await verify_and_update_password(data.password, employee.password_hash)
+    # A deactivated employee gets the same error as a wrong password, so the
+    # response doesn't reveal which accounts exist.
+    if not is_valid or not employee.is_active:
         raise invalid_credentials_error()
 
     if new_hash is not None:
         # Stored hash used older argon2 settings; save the upgraded one.
-        user.password_hash = new_hash
-
-    if user.email_verified_at is None:
-        # TODO: create a new OTP for this user (store it hashed with an expiry)
-        # and send it to their email, so they can verify and then log in.
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email not verified")
+        employee.password_hash = new_hash
 
     session_id = uuid.uuid4()
-    access_token = create_access_token(user.id, session_id)
-    refresh_token, refresh_expires_at = create_refresh_token(user.id, session_id)
+    access_token = create_access_token(employee.id, session_id)
+    refresh_token, refresh_expires_at = create_refresh_token(employee.id, session_id)
 
     db.add(
-        UserSessionModel(
+        EmployeeSessionModel(
             id=session_id,
-            user_id=user.id,
+            employee_id=employee.id,
             refresh_token_hash=hash_token(refresh_token),
             user_agent=user_agent[:_MAX_USER_AGENT_LENGTH] if user_agent else None,
             ip_address=_valid_ip_or_none(ip_address),
@@ -122,12 +84,11 @@ async def login_user(
     await db.commit()
 
     return LoginResult(
-        user=UserResponse.model_validate(user),
+        employee=EmployeeResponse.model_validate(employee),
         access_token=access_token,
         refresh_token=refresh_token,
         refresh_expires_at=refresh_expires_at,
     )
-
 
 
 async def refresh_session(db: AsyncSession, refresh_token: str | None) -> LoginResult:
@@ -139,10 +100,10 @@ async def refresh_session(db: AsyncSession, refresh_token: str | None) -> LoginR
 
     # Lock the row so two refreshes with the same token can't both rotate it.
     session = await db.scalar(
-        select(UserSessionModel)
+        select(EmployeeSessionModel)
         .where(
-            UserSessionModel.id == payload.session_id,
-            UserSessionModel.user_id == payload.user_id,
+            EmployeeSessionModel.id == payload.session_id,
+            EmployeeSessionModel.employee_id == payload.employee_id,
         )
         .with_for_update()
     )
@@ -152,24 +113,24 @@ async def refresh_session(db: AsyncSession, refresh_token: str | None) -> LoginR
     if not hmac.compare_digest(session.refresh_token_hash, hash_token(refresh_token)):
         # A correctly signed token for this session that isn't the latest one
         # means an old token was used again. Either it was stolen or someone
-        # is replaying it, so end every session for this user.
+        # is replaying it, so end every session for this employee.
         await db.execute(
-            update(UserSessionModel)
+            update(EmployeeSessionModel)
             .where(
-                UserSessionModel.user_id == session.user_id,
-                UserSessionModel.revoked_at.is_(None),
+                EmployeeSessionModel.employee_id == session.employee_id,
+                EmployeeSessionModel.revoked_at.is_(None),
             )
             .values(revoked_at=now)
         )
         await db.commit()
         raise invalid_refresh_token_error()
 
-    user = await db.get(UserModel, session.user_id)
-    if user is None:
+    employee = await db.get(EmployeeModel, session.employee_id)
+    if employee is None or not employee.is_active:
         raise invalid_refresh_token_error()
 
-    access_token = create_access_token(user.id, session.id)
-    new_refresh_token, refresh_expires_at = create_refresh_token(user.id, session.id)
+    access_token = create_access_token(employee.id, session.id)
+    new_refresh_token, refresh_expires_at = create_refresh_token(employee.id, session.id)
 
     session.refresh_token_hash = hash_token(new_refresh_token)
     session.expires_at = refresh_expires_at
@@ -177,7 +138,7 @@ async def refresh_session(db: AsyncSession, refresh_token: str | None) -> LoginR
     await db.commit()
 
     return LoginResult(
-        user=UserResponse.model_validate(user),
+        employee=EmployeeResponse.model_validate(employee),
         access_token=access_token,
         refresh_token=new_refresh_token,
         refresh_expires_at=refresh_expires_at,
@@ -196,11 +157,11 @@ async def logout_user(
         return
 
     await db.execute(
-        update(UserSessionModel)
+        update(EmployeeSessionModel)
         .where(
-            UserSessionModel.id == payload.session_id,
-            UserSessionModel.user_id == payload.user_id,
-            UserSessionModel.revoked_at.is_(None),
+            EmployeeSessionModel.id == payload.session_id,
+            EmployeeSessionModel.employee_id == payload.employee_id,
+            EmployeeSessionModel.revoked_at.is_(None),
         )
         .values(revoked_at=datetime.now(UTC))
     )

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Request, Response, status
+from fastapi import APIRouter, Cookie, HTTPException, Request, Response, status
 
 from warden.core.config import get_settings
 from warden.core.cookies import (
@@ -8,23 +8,19 @@ from warden.core.cookies import (
     REFRESH_TOKEN_COOKIE,
     REFRESH_TOKEN_COOKIE_PATH,
 )
-from warden.core.dependencies import CurrentUser, DbSession
-from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
-from warden.schemas.user import UserResponse
-from warden.services.auth import login_user, logout_user, refresh_session, register_user
+from warden.core.dependencies import CurrentUserDep, DbSession
+from warden.models import EmployeeModel
+from warden.schemas.auth import LoginRequest, LoginResult
+from warden.schemas.employee import EmployeeResponse
+from warden.services.auth import login_user, logout_user, refresh_session
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(data: RegisterRequest, db: DbSession) -> UserResponse:
-    return await register_user(db, data)
 
 
 @router.post("/login")
 async def login(
     data: LoginRequest, request: Request, response: Response, db: DbSession
-) -> UserResponse:
+) -> EmployeeResponse:
     result = await login_user(
         db,
         data,
@@ -32,8 +28,7 @@ async def login(
         ip_address=request.client.host if request.client else None,
     )
     _set_auth_cookies(response, result)
-    return result.user
-
+    return result.employee
 
 
 @router.post("/refresh")
@@ -41,10 +36,10 @@ async def refresh(
     response: Response,
     db: DbSession,
     refresh_token: Annotated[str | None, Cookie(alias=REFRESH_TOKEN_COOKIE)] = None,
-) -> UserResponse:
+) -> EmployeeResponse:
     result = await refresh_session(db, refresh_token)
     _set_auth_cookies(response, result)
-    return result.user
+    return result.employee
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -54,15 +49,20 @@ async def logout(
     access_token: Annotated[str | None, Cookie(alias=ACCESS_TOKEN_COOKIE)] = None,
     refresh_token: Annotated[str | None, Cookie(alias=REFRESH_TOKEN_COOKIE)] = None,
 ) -> None:
-    # No CurrentUser dependency: logout must still work, and clear cookies,
+    # No CurrentUserDep dependency: logout must still work, and clear cookies,
     # when the access token has expired or the session is already revoked.
     await logout_user(db, access_token, refresh_token)
     _clear_auth_cookies(response)
 
 
 @router.get("/me")
-async def me(user: CurrentUser) -> UserResponse:
-    return user
+async def me(user: CurrentUserDep, db: DbSession) -> EmployeeResponse:
+    # get_current_user already loaded this row in the same session, so this
+    # comes from the identity map without another query.
+    employee = await db.get(EmployeeModel, user.employee_id)
+    if employee is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return EmployeeResponse.model_validate(employee)
 
 
 def _set_auth_cookies(response: Response, result: LoginResult) -> None:
