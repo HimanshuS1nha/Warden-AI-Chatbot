@@ -17,6 +17,8 @@ class Settings(BaseSettings):
 
     cookie_secure: bool = False
 
+    log_level: str = "INFO"
+
 
 @lru_cache
 def get_settings() -> Settings:
