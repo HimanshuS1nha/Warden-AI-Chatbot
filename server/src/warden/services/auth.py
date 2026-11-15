@@ -15,7 +15,13 @@ from warden.core.hashing import (
     verify_and_update_password,
     verify_password,
 )
-from warden.core.jwt import create_access_token, create_refresh_token, decode_token
+from warden.core.jwt import (
+    TokenPayload,
+    TokenType,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+)
 from warden.models import UserModel, UserSessionModel
 from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
 from warden.schemas.user import UserResponse
@@ -176,6 +182,38 @@ async def refresh_session(db: AsyncSession, refresh_token: str | None) -> LoginR
         refresh_token=new_refresh_token,
         refresh_expires_at=refresh_expires_at,
     )
+
+
+async def logout_user(
+    db: AsyncSession, access_token: str | None, refresh_token: str | None
+) -> None:
+    # Prefer the refresh token: it outlives the access token, so logout still
+    # finds the session after the access token has expired.
+    payload = _decode_or_none(refresh_token, "refresh") or _decode_or_none(
+        access_token, "access"
+    )
+    if payload is None:
+        return
+
+    await db.execute(
+        update(UserSessionModel)
+        .where(
+            UserSessionModel.id == payload.session_id,
+            UserSessionModel.user_id == payload.user_id,
+            UserSessionModel.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+    )
+    await db.commit()
+
+
+def _decode_or_none(token: str | None, expected_type: TokenType) -> TokenPayload | None:
+    if not token:
+        return None
+    try:
+        return decode_token(token, expected_type)
+    except HTTPException:
+        return None
 
 
 def _valid_ip_or_none(value: str | None) -> str | None:

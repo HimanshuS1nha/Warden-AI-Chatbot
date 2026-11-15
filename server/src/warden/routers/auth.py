@@ -11,7 +11,7 @@ from warden.core.cookies import (
 from warden.core.dependencies import CurrentUser, DbSession
 from warden.schemas.auth import LoginRequest, LoginResult, RegisterRequest
 from warden.schemas.user import UserResponse
-from warden.services.auth import login_user, refresh_session, register_user
+from warden.services.auth import login_user, logout_user, refresh_session, register_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -47,6 +47,19 @@ async def refresh(
     return result.user
 
 
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    response: Response,
+    db: DbSession,
+    access_token: Annotated[str | None, Cookie(alias=ACCESS_TOKEN_COOKIE)] = None,
+    refresh_token: Annotated[str | None, Cookie(alias=REFRESH_TOKEN_COOKIE)] = None,
+) -> None:
+    # No CurrentUser dependency: logout must still work, and clear cookies,
+    # when the access token has expired or the session is already revoked.
+    await logout_user(db, access_token, refresh_token)
+    _clear_auth_cookies(response)
+
+
 @router.get("/me")
 async def me(user: CurrentUser) -> UserResponse:
     return user
@@ -67,6 +80,24 @@ def _set_auth_cookies(response: Response, result: LoginResult) -> None:
         REFRESH_TOKEN_COOKIE,
         result.refresh_token,
         max_age=settings.refresh_token_expire_days * 24 * 60 * 60,
+        path=REFRESH_TOKEN_COOKIE_PATH,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    settings = get_settings()
+    response.delete_cookie(
+        ACCESS_TOKEN_COOKIE,
+        path="/",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
+    response.delete_cookie(
+        REFRESH_TOKEN_COOKIE,
         path=REFRESH_TOKEN_COOKIE_PATH,
         httponly=True,
         secure=settings.cookie_secure,
