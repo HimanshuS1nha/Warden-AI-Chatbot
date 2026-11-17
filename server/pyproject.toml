@@ -8,6 +8,7 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
+    "faker>=40.54.0",
     "fastapi[standard]>=0.162.7",
     "pwdlib[argon2]>=0.4.0",
     "pydantic-settings>=2.16.3",
