@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
@@ -70,3 +71,33 @@ async def get_current_user(
 
 
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
+
+
+def require_role(*roles: Role) -> Callable[[CurrentUser], Awaitable[CurrentUser]]:
+    """Dependency that lets the request through only for the given roles.
+
+    Returns the CurrentUser, so it can replace CurrentUserDep:
+
+        HRUser = Annotated[CurrentUser, Depends(require_role(Role.HR))]
+
+    or guard a whole router without using the user:
+
+        APIRouter(dependencies=[Depends(require_role(Role.HR))])
+
+    No session gives 401 (from get_current_user); the wrong role gives 403.
+    This only checks the role. Whether a manager may touch a given employee
+    or request is a scoping rule and belongs in the service.
+    """
+    if not roles:
+        raise ValueError("require_role needs at least one role")
+    allowed = frozenset(Role(role) for role in roles)
+
+    async def check_role(user: CurrentUserDep) -> CurrentUser:
+        if user.role not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have permission to do this",
+            )
+        return user
+
+    return check_role
