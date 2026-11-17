@@ -1,0 +1,105 @@
+# Company documents for the RAG corpus. The PDFs in this folder are the
+# documents; ingestion reads this file to register each document and version.
+#
+# file: path of the PDF, relative to this folder
+# access_level: who can retrieve the document
+#   all     - every employee
+#   manager - managers and HR
+#   hr      - HR only
+#
+# The numbers in these documents (leave entitlements, carry-forward, sick leave
+# backdating) must match the seed data and the leave rules in the backend.
+# Leave policy version 2 is the one the backend implements; version 1 exists to
+# test version switching.
+
+documents:
+  - slug: employee-handbook
+    title: Employee Handbook
+    access_level: all
+    version: 1
+    effective_date: 2026-01-01
+    file: employee-handbook.pdf
+
+  - slug: leave-policy
+    title: Leave Policy
+    access_level: all
+    version: 1
+    effective_date: 2025-01-01
+    file: leave-policy-v1.pdf
+
+  - slug: leave-policy
+    title: Leave Policy
+    access_level: all
+    version: 2
+    effective_date: 2026-01-01
+    file: leave-policy-v2.pdf
+
+  - slug: parental-leave-policy
+    title: Parental Leave Policy
+    access_level: all
+    version: 1
+    effective_date: 2026-01-01
+    file: parental-leave-policy.pdf
+
+  - slug: attendance-policy
+    title: Attendance and Working Hours Policy
+    access_level: all
+    version: 1
+    effective_date: 2026-01-01
+    file: attendance-policy.pdf
+
+  - slug: work-from-home-policy
+    title: Work From Home Policy
+    access_level: all
+    version: 1
+    effective_date: 2026-01-01
+    file: work-from-home-policy.pdf
+
+  - slug: code-of-conduct
+    title: Code of Conduct
+    access_level: all
+    version: 1
+    effective_date: 2025-04-01
+    file: code-of-conduct.pdf
+
+  - slug: data-privacy-policy
+    title: Employee Data Privacy Policy
+    access_level: all
+    version: 1
+    effective_date: 2026-01-01
+    file: data-privacy-policy.pdf
+
+  - slug: travel-reimbursement-policy
+    title: Travel and Reimbursement Policy
+    access_level: all
+    version: 1
+    effective_date: 2026-04-01
+    file: travel-reimbursement-policy.pdf
+
+  - slug: health-insurance-policy
+    title: Health and Insurance Benefits
+    access_level: all
+    version: 1
+    effective_date: 2026-04-01
+    file: health-insurance-policy.pdf
+
+  - slug: resignation-exit-policy
+    title: Resignation and Exit Policy
+    access_level: all
+    version: 1
+    effective_date: 2026-01-01
+    file: resignation-exit-policy.pdf
+
+  - slug: manager-handbook
+    title: Manager Handbook
+    access_level: manager
+    version: 1
+    effective_date: 2026-01-01
+    file: manager-handbook.pdf
+
+  - slug: disciplinary-procedure
+    title: Disciplinary Procedure
+    access_level: hr
+    version: 1
+    effective_date: 2026-01-01
+    file: disciplinary-procedure.pdf
