@@ -4,6 +4,7 @@ from datetime import date
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import contains_eager
 
 from warden.models import (
     EmployeeModel,
@@ -18,6 +19,7 @@ from warden.models import (
 ACTIVE_STATUSES = (LeaveStatus.PENDING, LeaveStatus.APPROVED)
 
 DEFAULT_HISTORY_LIMIT = 20
+DEFAULT_TEAM_LIMIT = 50
 
 
 class LeaveRepository:
@@ -71,6 +73,43 @@ class LeaveRepository:
             query = query.where(LeaveRequestModel.status == status)
         result = await self.db.scalars(query)
         return result.all()
+
+    async def list_team_requests(
+        self,
+        manager_id: uuid.UUID,
+        status: LeaveStatus | None = None,
+        limit: int = DEFAULT_TEAM_LIMIT,
+    ) -> Sequence[LeaveRequestModel]:
+        """Requests from the manager's direct reports, latest start date
+        first, each with its `employee` loaded."""
+        query = (
+            select(LeaveRequestModel)
+            .join(LeaveRequestModel.employee)
+            .options(contains_eager(LeaveRequestModel.employee))
+            .where(EmployeeModel.manager_id == manager_id)
+            .order_by(LeaveRequestModel.start_date.desc(), LeaveRequestModel.id.desc())
+            .limit(limit)
+        )
+        if status is not None:
+            query = query.where(LeaveRequestModel.status == status)
+        result = await self.db.scalars(query)
+        return result.all()
+
+    async def lock_employee(self, employee_id: uuid.UUID) -> None:
+        """Hold the employee's row until the transaction ends, so two leave
+        applications from the same person run one after the other. Without
+        it, both could pass the overlap and balance checks before either
+        inserts.
+
+        FOR NO KEY UPDATE doesn't block inserts that only reference the row
+        (attendance, audit logs), which take FOR KEY SHARE.
+        """
+        await self.db.execute(
+            select(EmployeeModel.id)
+            .where(EmployeeModel.id == employee_id)
+            # key_share=True without read=True renders FOR NO KEY UPDATE.
+            .with_for_update(key_share=True)
+        )
 
     async def get_request_for_employee(
         self, request_id: uuid.UUID, employee_id: uuid.UUID, *, for_update: bool = False

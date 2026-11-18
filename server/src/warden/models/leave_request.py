@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
@@ -10,10 +11,13 @@ from sqlalchemy import (
     Integer,
     Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from warden.core.database import Base, UUIDPrimaryKey
 from warden.models.enums import LeaveStatus, LeaveType, pg_enum
+
+if TYPE_CHECKING:
+    from warden.models.employee import EmployeeModel
 
 
 class LeaveRequestModel(UUIDPrimaryKey, Base):
@@ -44,3 +48,7 @@ class LeaveRequestModel(UUIDPrimaryKey, Base):
     )
     decision_comment: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # The employee who asked for the leave (not the approver). lazy="raise",
+    # like every relationship here: load it explicitly when you need it.
+    employee: Mapped["EmployeeModel"] = relationship(foreign_keys=[employee_id], lazy="raise")
