@@ -1,6 +1,8 @@
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +20,23 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
 
     log_level: str = "INFO"
+
+    # Paths are relative to the server folder, where commands run (like .env).
+    documents_dir: Path = Path("documents")
+    # Embeddings cache and chunk store. Safe to delete: ingest rebuilds it.
+    cache_dir: Path = Path(".cache")
+
+    # One key per provider, shared by everything that calls it: embeddings
+    # now, the agent's chat model later.
+    gemini_api_key: SecretStr = SecretStr("")
+
+    embedding_provider: Literal["gemini"] = "gemini"
+    embedding_model: str = "gemini-embedding-001"
+    # gemini-embedding-001 returns 3072 dimensions by default and can return
+    # fewer. 768 keeps the cache and index small with little loss in quality.
+    embedding_dimensions: int = Field(default=768, gt=0)
+    # Gemini accepts at most 100 texts per request.
+    embedding_batch_size: int = Field(default=100, gt=0, le=100)
 
 
 @lru_cache

@@ -10,11 +10,16 @@ dependencies = [
     "asyncpg>=0.32.0",
     "faker>=40.54.0",
     "fastapi[standard]>=0.162.7",
+    "google-genai>=3.5.0",
+    "numpy>=2.5.5",
     "pwdlib[argon2]>=0.4.0",
     "pydantic-settings>=2.16.3",
     "pyjwt>=2.15.1",
+    "pymupdf>=2.1",
+    "python-docx>=1.2.0",
     "pyyaml>=6.0.3",
     "sqlalchemy[asyncio]>=2.1.8",
+    "tokenizers>=0.23.3",
     "uuid-utils>=1.2.0",
 ]
 
@@ -32,6 +37,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.5.0",
     "ruff>=0.17.5",
+    "types-pyyaml>=6.0.12.20261113",
 ]
 
 [tool.ruff]
@@ -51,6 +57,11 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "S"]
 files = ["src/warden"]
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# PyMuPDF and python-docx annotate only part of their API.
+module = ["warden.rag.parsing"]
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
