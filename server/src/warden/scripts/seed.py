@@ -240,7 +240,7 @@ class CompanyBuilder:
     def __init__(self, now: datetime) -> None:
         self.now = now.astimezone(co.TIMEZONE)
         self.today = self.now.date()
-        self.rng = random.Random(RANDOM_SEED) 
+        self.rng = random.Random(RANDOM_SEED)  # noqa: S311 - reproducible demo data
         self.fake = Faker("en_IN")
         self.fake.seed_instance(RANDOM_SEED)
 

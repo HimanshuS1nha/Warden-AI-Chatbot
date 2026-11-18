@@ -17,13 +17,13 @@ from typing import Any
 
 import asyncpg
 import pytest
-from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from alembic import command
 from tests.factories import PASSWORD, MakeEmployee
 from warden.core.database import get_db
 from warden.core.hashing import password_hash

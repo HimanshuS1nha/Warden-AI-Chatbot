@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from functools import cache
 
 import pytest
+
 from warden.models import AttendanceStatus, LeaveStatus, LeaveType, Role
 from warden.scripts import company as co
 from warden.scripts.seed import CompanyData, build_company

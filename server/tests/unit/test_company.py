@@ -1,6 +1,7 @@
 from datetime import date
 
 import pytest
+
 from warden.models import LeaveType
 from warden.scripts import company as co
 

@@ -1,6 +1,7 @@
 from datetime import date
 
 import pytest
+
 from warden.services.leave_days import CrossesYearBoundary, count_working_days
 
 NO_HOLIDAYS: frozenset[date] = frozenset()

@@ -32,6 +32,13 @@ app.include_router(employees.router)
 app.include_router(holidays.router)
 
 
+@app.get("/health", tags=["health"])
+async def health() -> dict[str, str]:
+    """Liveness check for container health checks and uptime monitors. Needs no
+    login and doesn't touch the database."""
+    return {"status": "ok"}
+
+
 @app.get("/")
 async def root() -> dict[str, str]:
     return {"message": "Hello from Warden"}
