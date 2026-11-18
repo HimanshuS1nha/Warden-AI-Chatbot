@@ -5,7 +5,7 @@ from warden.core.config import get_settings
 from warden.core.exceptions import register_exception_handlers
 from warden.core.logging import configure_logging
 from warden.core.request_context import RequestContextMiddleware
-from warden.routers import auth
+from warden.routers import auth, employees, holidays, me, team
 
 settings = get_settings()
 
@@ -26,6 +26,10 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(me.router)
+app.include_router(team.router)
+app.include_router(employees.router)
+app.include_router(holidays.router)
 
 
 @app.get("/")
