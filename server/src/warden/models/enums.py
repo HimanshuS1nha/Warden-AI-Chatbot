@@ -72,3 +72,32 @@ class MessageRole(StrEnum):
 class UnansweredReason(StrEnum):
     NO_RELEVANT_DOCS = "no_relevant_docs"
     LOW_CONFIDENCE = "low_confidence"
+
+
+class AuditAction(StrEnum):
+    """What an audit log row records. Stored as a plain string, so adding an
+    action needs no migration."""
+
+    AUTH_LOGIN = "auth.login"
+    AUTH_LOGOUT = "auth.logout"
+    AUTH_REFRESH_REUSE = "auth.refresh_reuse"
+    AUTHZ_FORBIDDEN = "authz.forbidden"
+    LEAVE_APPLY = "leave.apply"
+    LEAVE_CANCEL = "leave.cancel"
+    LEAVE_APPROVE = "leave.approve"
+    LEAVE_REJECT = "leave.reject"
+    EMPLOYEE_VIEW = "employee.view"
+    PENDING_ACTION_CONFIRM = "pending_action.confirm"
+    PENDING_ACTION_CANCEL = "pending_action.cancel"
+    DOCUMENT_UPLOAD = "document.upload"
+    DOCUMENT_REINDEX = "document.reindex"
+
+
+class AuditTarget(StrEnum):
+    """The kind of record an audit log row's `target_id` points at."""
+
+    EMPLOYEE = "employee"
+    SESSION = "session"
+    LEAVE_REQUEST = "leave_request"
+    PENDING_ACTION = "pending_action"
+    DOCUMENT_VERSION = "document_version"

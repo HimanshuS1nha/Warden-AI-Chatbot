@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from warden.core.config import get_settings
 from warden.core.exceptions import register_exception_handlers
 from warden.core.logging import configure_logging
+from warden.core.request_context import RequestContextMiddleware
 from warden.routers import auth
 
 settings = get_settings()
@@ -14,6 +15,8 @@ app = FastAPI(title="Warden")
 
 register_exception_handlers(app)
 
+# Added first, so it runs inside CORS: preflight requests never reach it.
+app.add_middleware(RequestContextMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_url],

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, HTTPException, Response, status
 
 from warden.core.config import get_settings
 from warden.core.cookies import (
@@ -18,15 +18,9 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/login")
-async def login(
-    data: LoginRequest, request: Request, response: Response, db: DbSession
-) -> EmployeeResponse:
-    result = await login_user(
-        db,
-        data,
-        user_agent=request.headers.get("user-agent"),
-        ip_address=request.client.host if request.client else None,
-    )
+async def login(data: LoginRequest, response: Response, db: DbSession) -> EmployeeResponse:
+    # The client IP and user agent come from the request context.
+    result = await login_user(db, data)
     _set_auth_cookies(response, result)
     return result.employee
 
