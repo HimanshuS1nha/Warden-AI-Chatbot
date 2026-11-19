@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from warden.core.request_context import REQUEST_ID_HEADER, context_for, use_request_context
 from warden.services.errors import Forbidden, NotFound, RuleViolation, ServiceError
 
 # Every error response has the shape {"message": str}. Validation errors add
@@ -98,15 +99,21 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     # the exception after this response is sent, so uvicorn logs it a second
     # time as "Exception in ASGI application"; this entry is the one that
     # names the request.
-    logger.error(
-        "Unhandled exception on %s %s",
-        request.method,
-        request.url.path,
-        exc_info=exc,
-    )
+    #
+    # This handler runs outside RequestContextMiddleware, so it restores the
+    # request's context for the log line and adds the request ID header itself.
+    context = context_for(request.scope)
+    with use_request_context(context):
+        logger.error(
+            "Unhandled exception on %s %s",
+            request.method,
+            request.url.path,
+            exc_info=exc,
+        )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"message": "Internal server error"},
+        headers={REQUEST_ID_HEADER: context.request_id} if context.request_id else None,
     )
 
 

@@ -17,7 +17,10 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep loggers that already exist: the test suite runs migrations in the
+    # same process as the app, and the default would silence every "warden"
+    # logger created before this point.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Use the app's DATABASE_URL. "%" is escaped because the ini parser treats it
 # as interpolation.

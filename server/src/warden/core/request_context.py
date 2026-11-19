@@ -9,22 +9,27 @@ Behind a reverse proxy, the socket's peer is the proxy. Uvicorn must run with
 """
 
 import ipaddress
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
-from starlette.datastructures import Headers
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 MAX_USER_AGENT_LENGTH = 512
+
+REQUEST_ID_HEADER = "X-Request-ID"
 
 
 @dataclass(frozen=True)
 class RequestContext:
     ip: str | None = None
     user_agent: str | None = None
-    # Set by the request ID middleware once task 0.13 adds it.
+    # Generated for every HTTP request. Appears in log lines, audit rows and
+    # the X-Request-ID response header, so a user's report can be matched to
+    # the logs.
     request_id: str | None = None
 
 
@@ -61,11 +66,26 @@ def valid_ip_or_none(value: str | None) -> str | None:
         return None
 
 
+def context_for(scope: Scope) -> RequestContext:
+    """The request's context, also from outside RequestContextMiddleware.
+
+    Starlette runs the handler for unhandled exceptions in its outermost
+    middleware, after this one has exited and reset the variable, so the
+    middleware keeps a copy in the request state.
+    """
+    context = scope.get("state", {}).get("request_context")
+    return context if isinstance(context, RequestContext) else get_request_context()
+
+
 class RequestContextMiddleware:
-    """Sets the RequestContext for each HTTP request.
+    """Sets the RequestContext for each HTTP request and returns its request ID
+    in the X-Request-ID header.
 
     A plain ASGI middleware rather than BaseHTTPMiddleware, so the endpoint
     and its dependencies run in the same context the variable is set in.
+
+    The ID is always generated here. An incoming X-Request-ID is ignored, so
+    clients can't choose the IDs that end up in the audit log.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -81,6 +101,15 @@ class RequestContextMiddleware:
         context = RequestContext(
             ip=valid_ip_or_none(client[0] if client else None),
             user_agent=user_agent[:MAX_USER_AGENT_LENGTH] if user_agent else None,
+            request_id=uuid.uuid4().hex,
         )
+        scope.setdefault("state", {})["request_context"] = context
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers[REQUEST_ID_HEADER] = context.request_id or ""
+            await send(message)
+
         with use_request_context(context):
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send_with_request_id)

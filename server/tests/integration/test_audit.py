@@ -38,6 +38,15 @@ async def audit_rows(db: AsyncSession, action: AuditAction) -> Sequence[AuditLog
     return result.all()
 
 
+def request_details(row: AuditLogModel) -> dict[str, object]:
+    """`details` without the request ID, after checking it's there. Every row
+    written during an HTTP request carries the ID from the X-Request-ID header."""
+    details = dict(row.details)
+    request_id = details.pop("request_id")
+    assert isinstance(request_id, str) and len(request_id) == 32
+    return details
+
+
 async def session_ids(db: AsyncSession, employee: EmployeeModel) -> list[object]:
     result = await db.scalars(
         select(EmployeeSessionModel.id)
@@ -62,7 +71,7 @@ async def test_login_success_records_the_new_session(
     assert row.actor_id == employee.id
     assert row.target_type == AuditTarget.SESSION
     assert [row.target_id] == await session_ids(db, employee)
-    assert row.details == {}
+    assert request_details(row) == {}
     assert str(row.ip) == CLIENT_IP
 
 
@@ -98,7 +107,7 @@ async def test_failed_login_records_the_reason_but_responds_the_same(
     assert row.outcome == AuditOutcome.DENIED
     assert row.actor_id == (employee.id if actor_is_employee else None)
     assert row.target_type is None and row.target_id is None
-    assert row.details == {"email": email, "reason": reason}
+    assert request_details(row) == {"email": email, "reason": reason}
     assert str(row.ip) == CLIENT_IP
 
 
@@ -134,8 +143,8 @@ async def test_logout_records_whether_a_session_was_revoked(
         assert row.outcome == AuditOutcome.ALLOWED
         assert row.actor_id == employee.id
         assert (row.target_type, row.target_id) == (AuditTarget.SESSION, session_id)
-    assert first.details == {"revoked": True}
-    assert second.details == {"revoked": False}
+    assert request_details(first) == {"revoked": True}
+    assert request_details(second) == {"revoked": False}
 
 
 async def test_logout_without_tokens_records_nothing(client: AsyncClient, db: AsyncSession) -> None:
@@ -161,7 +170,7 @@ async def test_refresh_token_reuse_records_how_many_sessions_were_revoked(
     assert row.outcome == AuditOutcome.DENIED
     assert row.actor_id == employee.id
     assert (row.target_type, row.target_id) == (AuditTarget.SESSION, reused_session_id)
-    assert row.details == {"revoked_sessions": 2}
+    assert request_details(row) == {"revoked_sessions": 2}
 
 
 async def test_routine_refresh_records_nothing(
@@ -205,7 +214,7 @@ async def test_forbidden_writes_one_row_and_unauthenticated_writes_none(
     [row] = await audit_rows(db, AuditAction.AUTHZ_FORBIDDEN)
     assert row.outcome == AuditOutcome.DENIED
     assert row.actor_id == manager.id
-    assert row.details == {
+    assert request_details(row) == {
         "method": "GET",
         "path": "/api/test-hr-only",
         "role": "manager",
