@@ -51,9 +51,7 @@ def test_ten_public_holidays_a_year(year: int) -> None:
 def test_good_friday() -> None:
     holidays = {name: day for day, name in co.public_holidays(2026)}
     assert holidays["Good Friday"] == date(2026, 4, 3)
-    assert {n: d for d, n in co.public_holidays(2028)}["Good Friday"] == date(
-        2028, 4, 14
-    )
+    assert {n: d for d, n in co.public_holidays(2028)}["Good Friday"] == date(2028, 4, 14)
 
 
 def test_unknown_year_fails_loudly() -> None:

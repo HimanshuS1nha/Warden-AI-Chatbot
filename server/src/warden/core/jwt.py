@@ -48,9 +48,7 @@ def create_access_token(employee_id: uuid.UUID, session_id: uuid.UUID) -> str:
     return token
 
 
-def create_refresh_token(
-    employee_id: uuid.UUID, session_id: uuid.UUID
-) -> tuple[str, datetime]:
+def create_refresh_token(employee_id: uuid.UUID, session_id: uuid.UUID) -> tuple[str, datetime]:
     """Return the token and its expiry. Store the expiry on the session row."""
     lifetime = timedelta(days=get_settings().refresh_token_expire_days)
     return _create_token(employee_id, session_id, "refresh", lifetime)

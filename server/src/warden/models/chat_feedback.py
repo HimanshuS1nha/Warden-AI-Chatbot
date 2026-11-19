@@ -20,9 +20,7 @@ class ChatFeedbackModel(UUIDPrimaryKey, Base):
         CheckConstraint("rating IN (-1, 1)", name="thumbs_up_or_down"),
     )
 
-    employee_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("employees.id", ondelete="CASCADE")
-    )
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
     message_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("chat_messages.id", ondelete="CASCADE")
     )

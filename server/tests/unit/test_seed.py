@@ -81,12 +81,12 @@ def test_demo_accounts(data: CompanyData, now: datetime) -> None:
 
     today = now.date()
     mine = [r for r in data.leave_requests if r["employee_id"] == employee["id"]]
-    assert any(
-        r["status"] is LeaveStatus.PENDING and r["start_date"] > today for r in mine
-    ), "a pending request for the demo manager to approve"
-    assert any(
-        r["status"] is LeaveStatus.APPROVED and r["start_date"] > today for r in mine
-    ), "approved leave that can still be cancelled"
+    assert any(r["status"] is LeaveStatus.PENDING and r["start_date"] > today for r in mine), (
+        "a pending request for the demo manager to approve"
+    )
+    assert any(r["status"] is LeaveStatus.APPROVED and r["start_date"] > today for r in mine), (
+        "approved leave that can still be cancelled"
+    )
 
 
 def test_every_status_is_seeded(data: CompanyData) -> None:
@@ -96,11 +96,7 @@ def test_every_status_is_seeded(data: CompanyData) -> None:
 def test_request_days_are_working_days(data: CompanyData) -> None:
     holidays = _holidays(data)
     for r in data.leave_requests:
-        assert (
-            r["days"]
-            == count_working_days(r["start_date"], r["end_date"], holidays)
-            > 0
-        )
+        assert r["days"] == count_working_days(r["start_date"], r["end_date"], holidays) > 0
         assert is_working_day(r["start_date"], holidays)
 
 
@@ -124,9 +120,7 @@ def test_balances_match_requests(data: CompanyData) -> None:
         elif r["status"] is LeaveStatus.PENDING:
             pending[key] += r["days"]
 
-    balances = {
-        (b["employee_id"], b["year"], b["leave_type"]): b for b in data.leave_balances
-    }
+    balances = {(b["employee_id"], b["year"], b["leave_type"]): b for b in data.leave_balances}
     assert set(used) | set(pending) <= set(balances)
     for key, b in balances.items():
         assert b["used"] == used[key]
@@ -149,9 +143,7 @@ def test_earned_leave_carry_forward_is_capped(data: CompanyData, now: datetime) 
             assert b["allotted"] <= co.LEAVE_ENTITLEMENT[b["leave_type"]]
 
 
-def test_pending_requests_follow_the_start_date_rule(
-    data: CompanyData, now: datetime
-) -> None:
+def test_pending_requests_follow_the_start_date_rule(data: CompanyData, now: datetime) -> None:
     today = now.date()
     for r in data.leave_requests:
         if r["status"] is not LeaveStatus.PENDING or r["start_date"] >= today:
@@ -176,11 +168,7 @@ def test_decisions(data: CompanyData, now: datetime) -> None:
         assert r["created_at"] <= now
         assert r["created_at"].date() >= people[r["employee_id"]]["joining_date"]
         if r["status"] in (LeaveStatus.APPROVED, LeaveStatus.REJECTED):
-            assert (
-                r["approver_id"]
-                == people[r["employee_id"]]["manager_id"]
-                != r["employee_id"]
-            )
+            assert r["approver_id"] == people[r["employee_id"]]["manager_id"] != r["employee_id"]
             assert r["created_at"] <= r["decided_at"] <= now
         if r["status"] is LeaveStatus.REJECTED:
             assert r["decision_comment"]

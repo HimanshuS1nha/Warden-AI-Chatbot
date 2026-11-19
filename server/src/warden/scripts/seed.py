@@ -270,14 +270,9 @@ class CompanyBuilder:
         self._add_people()
         self._plan_leave()
         return CompanyData(
-            departments=[
-                {"id": id_, "name": name} for name, id_ in self.department_ids.items()
-            ],
+            departments=[{"id": id_, "name": name} for name, id_ in self.department_ids.items()],
             employees=[self._employee_row(p) for p in self.people],
-            holidays=[
-                {"date": day, "name": name}
-                for day, name in sorted(self.holidays.items())
-            ],
+            holidays=[{"date": day, "name": name} for day, name in sorted(self.holidays.items())],
             leave_balances=[
                 {
                     "employee_id": employee_id,
@@ -338,9 +333,7 @@ class CompanyBuilder:
                     role=Role.MANAGER,
                     department=department,
                     job_title=MANAGER_TITLES[department],
-                    joining_date=self._random_date(
-                        date(2018, 1, 1), date(2021, 12, 31)
-                    ),
+                    joining_date=self._random_date(date(2018, 1, 1), date(2021, 12, 31)),
                     manager=self.hr_head if department == hr else None,
                 )
 
@@ -366,9 +359,7 @@ class CompanyBuilder:
 
         for department, headcount in DEPARTMENT_HEADCOUNT.items():
             already = sum(
-                1
-                for p in self.people
-                if p.department == department and p.role is Role.EMPLOYEE
+                1 for p in self.people if p.department == department and p.role is Role.EMPLOYEE
             )
             for _ in range(headcount - already):
                 self._person(
@@ -383,9 +374,9 @@ class CompanyBuilder:
         for p in self.people:
             self._open_balances(p, self.today.year)
         # Fixed so the demo employee's numbers are easy to check.
-        self.balances[
-            (self.demo_employee.id, self.today.year, LeaveType.EARNED)
-        ].allotted = co.LEAVE_ENTITLEMENT[LeaveType.EARNED] + 5
+        self.balances[(self.demo_employee.id, self.today.year, LeaveType.EARNED)].allotted = (
+            co.LEAVE_ENTITLEMENT[LeaveType.EARNED] + 5
+        )
 
     def _person(
         self,
@@ -472,12 +463,8 @@ class CompanyBuilder:
                 and p.joining_date.year < year
             ):
                 # Unused earned leave carried forward from last year.
-                last_year = co.prorated_entitlement(
-                    leave_type, p.joining_date, year - 1
-                )
-                allotted += self.rng.randint(
-                    0, min(co.EARNED_LEAVE_CARRY_FORWARD_LIMIT, last_year)
-                )
+                last_year = co.prorated_entitlement(leave_type, p.joining_date, year - 1)
+                allotted += self.rng.randint(0, min(co.EARNED_LEAVE_CARRY_FORWARD_LIMIT, last_year))
             self.balances[(p.id, year, leave_type)] = Balance(allotted)
 
     def _balance(self, p: Person, year: int, leave_type: LeaveType) -> Balance:
@@ -580,9 +567,7 @@ class CompanyBuilder:
                 (LeaveStatus.APPROVED, LeaveStatus.REJECTED, LeaveStatus.CANCELLED),
                 (75, 12, 13),
             )[0]
-            self._add(
-                p, leave_type, length, status, past=self._random_date(year_start, today)
-            )
+            self._add(p, leave_type, length, status, past=self._random_date(year_start, today))
 
         for status, chance in (
             (LeaveStatus.PENDING, 0.3 if can_be_pending else 0),
@@ -597,9 +582,7 @@ class CompanyBuilder:
         if can_be_pending and rng.random() < 0.06:
             # Off sick recently, applied after coming back, not approved yet.
             start = today - timedelta(days=rng.randint(2, co.SICK_LEAVE_BACKDATE_DAYS))
-            self._add(
-                p, LeaveType.SICK, rng.randint(1, 2), LeaveStatus.PENDING, past=start
-            )
+            self._add(p, LeaveType.SICK, rng.randint(1, 2), LeaveStatus.PENDING, past=start)
 
     def _random_leave(self, *, future: bool) -> tuple[LeaveType, int]:
         weights = (55, 10, 35) if future else (45, 25, 30)
@@ -636,9 +619,7 @@ class CompanyBuilder:
                 low = max(low, today - timedelta(days=co.SICK_LEAVE_BACKDATE_DAYS))
             windows.append((max(past, low), low, today - timedelta(days=1)))
         if future is not None:
-            windows.append(
-                (future, today + timedelta(days=1), today + timedelta(days=75))
-            )
+            windows.append((future, today + timedelta(days=1), today + timedelta(days=75)))
 
         for preferred, low, high in windows:
             day = preferred
@@ -655,9 +636,7 @@ class CompanyBuilder:
                         return
                 day += timedelta(days=1)
         if required:
-            raise RuntimeError(
-                f"No room for {p.name}'s {status} {leave_type} leave near {future}"
-            )
+            raise RuntimeError(f"No room for {p.name}'s {status} {leave_type} leave near {future}")
 
     def _span(self, day: date, working_days: int) -> tuple[date, date] | None:
         """The first `working_days` working days from `day`, or None if they
@@ -753,9 +732,7 @@ class CompanyBuilder:
             # The policy asks for 14 days' notice for 3 or more days.
             day = start - timedelta(days=rng.randint(14, 30))
         day = min(max(day, p.joining_date), self.today)
-        moment = datetime.combine(
-            day, time(rng.randint(9, 18), rng.randint(0, 59)), co.TIMEZONE
-        )
+        moment = datetime.combine(day, time(rng.randint(9, 18), rng.randint(0, 59)), co.TIMEZONE)
         return min(moment, self.now - timedelta(minutes=1))
 
     def _later(self, moment: datetime, latest: datetime | None) -> datetime:
@@ -786,13 +763,9 @@ class CompanyBuilder:
             elif day in self.unapproved_absence[p.id] or rng.random() < 0.02:
                 row["status"] = AttendanceStatus.ABSENT
             else:
-                new_joiner = (
-                    day - p.joining_date
-                ).days < co.OFFICE_ONLY_DAYS_AFTER_JOINING
+                new_joiner = (day - p.joining_date).days < co.OFFICE_ONLY_DAYS_AFTER_JOINING
                 # Monday and Friday are the usual work from home days.
-                wfh_chance = (
-                    0.0 if new_joiner else 0.45 if day.weekday() in (0, 4) else 0.07
-                )
+                wfh_chance = 0.0 if new_joiner else 0.45 if day.weekday() in (0, 4) else 0.07
                 is_wfh = rng.random() < wfh_chance
                 if rng.random() < 0.04:  # late, after core hours start
                     check_in = time(11, rng.randint(5, 40))
@@ -801,12 +774,9 @@ class CompanyBuilder:
                     check_in = time(minutes // 60, minutes % 60)
                 start = datetime.combine(day, check_in, co.TIMEZONE)
                 row |= {
-                    "status": AttendanceStatus.WFH
-                    if is_wfh
-                    else AttendanceStatus.PRESENT,
+                    "status": AttendanceStatus.WFH if is_wfh else AttendanceStatus.PRESENT,
                     "check_in": start,
-                    "check_out": start
-                    + timedelta(hours=8, minutes=rng.randint(15, 75)),
+                    "check_out": start + timedelta(hours=8, minutes=rng.randint(15, 75)),
                 }
             rows.append(row)
         return rows
@@ -835,9 +805,7 @@ class CompanyBuilder:
                     "employee_id": p.id,
                     "month": month_start.month,
                     "year": month_start.year,
-                    "net_pay": Decimal(monthly).quantize(
-                        Decimal("0.01"), ROUND_HALF_UP
-                    ),
+                    "net_pay": Decimal(monthly).quantize(Decimal("0.01"), ROUND_HALF_UP),
                     "document_ref": None,
                 }
             )
@@ -869,12 +837,8 @@ async def _wipe(session: AsyncSession) -> None:
     # DELETE, not TRUNCATE, so the foreign keys' ON DELETE rules run: sessions,
     # chat threads and pending actions go with their employee, while audit
     # logs and LLM call stats stay with the employee set to NULL.
-    await session.execute(
-        delete(EmployeeModel).execution_options(synchronize_session=False)
-    )
-    await session.execute(
-        delete(DepartmentModel).execution_options(synchronize_session=False)
-    )
+    await session.execute(delete(EmployeeModel).execution_options(synchronize_session=False))
+    await session.execute(delete(DepartmentModel).execution_options(synchronize_session=False))
 
 
 async def _count_rows(session: AsyncSession) -> dict[str, int]:
@@ -892,9 +856,7 @@ async def seed(
     if reset:
         await _wipe(session)
     elif await session.scalar(select(func.count()).select_from(EmployeeModel)):
-        raise SystemExit(
-            "The database already has employees. Run with --reset to replace them."
-        )
+        raise SystemExit("The database already has employees. Run with --reset to replace them.")
 
     employees = [row | {"password_hash": hashed_password} for row in data.employees]
     for name, model in TABLES:
@@ -915,9 +877,7 @@ async def main(reset: bool) -> None:
     width = max(map(len, counts))
     for name, count in counts.items():
         print(f"{name:<{width}}  {count:>6}")
-    print(
-        f"\nDemo accounts ({SEED_PASSWORD!r}): {', '.join(co.DEMO_ACCOUNTS.values())}"
-    )
+    print(f"\nDemo accounts ({SEED_PASSWORD!r}): {', '.join(co.DEMO_ACCOUNTS.values())}")
 
 
 if __name__ == "__main__":

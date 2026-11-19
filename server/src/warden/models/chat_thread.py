@@ -21,8 +21,6 @@ class ChatThreadModel(UUIDPrimaryKey, Base):
         Index("ix_chat_threads_employee_id_id", "employee_id", "id"),
     )
 
-    employee_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("employees.id", ondelete="CASCADE")
-    )
+    employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
     # Set from the first message. Null until then.
     title: Mapped[str | None] = mapped_column(String(200))

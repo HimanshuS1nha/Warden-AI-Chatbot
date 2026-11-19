@@ -15,14 +15,10 @@ class PendingActionModel(UUIDPrimaryKey, Base):
     Confirm, which runs the matching service call with these params."""
 
     __tablename__ = "pending_actions"
-    __table_args__ = (
-        Index("ix_pending_actions_employee_id_status", "employee_id", "status"),
-    )
+    __table_args__ = (Index("ix_pending_actions_employee_id_status", "employee_id", "status"),)
 
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
-    thread_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("chat_threads.id", ondelete="CASCADE")
-    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chat_threads.id", ondelete="CASCADE"))
     # "apply_leave", "cancel_leave", "approve_leave", "reject_leave"
     action_type: Mapped[str] = mapped_column(String(50))
     params: Mapped[dict[str, Any]] = mapped_column(JSONB)

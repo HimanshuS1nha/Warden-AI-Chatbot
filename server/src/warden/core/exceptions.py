@@ -20,9 +20,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
     # Registered for Starlette's HTTPException so it also catches the 404 and
     # 405 Starlette raises for unknown routes and methods. FastAPI's
     # HTTPException is a subclass, so ours land here too.
-    message = (
-        exc.detail if isinstance(exc.detail, str) else HTTPStatus(exc.status_code).phrase
-    )
+    message = exc.detail if isinstance(exc.detail, str) else HTTPStatus(exc.status_code).phrase
     # 4xx responses are client mistakes (bad token, unknown route) and happen
     # all the time, so they're INFO. A 5xx raised on purpose is our problem.
     level = logging.ERROR if exc.status_code >= 500 else logging.INFO
@@ -64,9 +62,7 @@ async def validation_exception_handler(
     # Pydantic's raw errors include the submitted value ("input"), which
     # can be a password, so only location, field and message are returned
     # and logged.
-    logger.info(
-        "%s %s -> 422 Validation failed: %s", request.method, request.url.path, errors
-    )
+    logger.info("%s %s -> 422 Validation failed: %s", request.method, request.url.path, errors)
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content=jsonable_encoder({"message": "Validation failed", "errors": errors}),
@@ -88,9 +84,7 @@ def _service_error_status(exc: ServiceError) -> int:
 async def service_error_handler(request: Request, exc: ServiceError) -> JSONResponse:
     status_code = _service_error_status(exc)
     level = logging.ERROR if status_code >= 500 else logging.INFO
-    logger.log(
-        level, "%s %s -> %d %s", request.method, request.url.path, status_code, exc.code
-    )
+    logger.log(level, "%s %s -> %d %s", request.method, request.url.path, status_code, exc.code)
     content: dict[str, object] = {"message": exc.message, "code": exc.code}
     # Details are facts about the caller's own request (their balance, the
     # date that clashed). Not-found and forbidden errors never carry any.

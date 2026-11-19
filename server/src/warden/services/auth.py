@@ -175,9 +175,7 @@ async def logout_user(
 ) -> None:
     # Prefer the refresh token: it outlives the access token, so logout still
     # finds the session after the access token has expired.
-    payload = _decode_or_none(refresh_token, "refresh") or _decode_or_none(
-        access_token, "access"
-    )
+    payload = _decode_or_none(refresh_token, "refresh") or _decode_or_none(access_token, "access")
     if payload is None:
         return
 

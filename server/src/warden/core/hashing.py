@@ -15,9 +15,7 @@ async def verify_password(password: str, hashed: str) -> bool:
     return await run_in_threadpool(password_hash.verify, password, hashed)
 
 
-async def verify_and_update_password(
-    password: str, hashed: str
-) -> tuple[bool, str | None]:
+async def verify_and_update_password(password: str, hashed: str) -> tuple[bool, str | None]:
     """Verify a password and return a new hash if the stored one uses outdated
     parameters. The caller should save the new hash when it isn't None."""
     return await run_in_threadpool(password_hash.verify_and_update, password, hashed)

@@ -38,12 +38,8 @@ class EmployeeModel(UUIDPrimaryKey, Base):
     # lazy="raise": under async a lazy load fails anyway, so make every
     # relationship load explicit (selectinload/joinedload) and fail loudly
     # when one is forgotten.
-    department: Mapped["DepartmentModel"] = relationship(
-        back_populates="employees", lazy="raise"
-    )
+    department: Mapped["DepartmentModel"] = relationship(back_populates="employees", lazy="raise")
     manager: Mapped["EmployeeModel | None"] = relationship(
         back_populates="reports", remote_side="EmployeeModel.id", lazy="raise"
     )
-    reports: Mapped[list["EmployeeModel"]] = relationship(
-        back_populates="manager", lazy="raise"
-    )
+    reports: Mapped[list["EmployeeModel"]] = relationship(back_populates="manager", lazy="raise")

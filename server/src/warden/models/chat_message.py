@@ -24,9 +24,7 @@ class ChatMessageModel(UUIDPrimaryKey, Base):
         Index("ix_chat_messages_thread_id_id", "thread_id", "id"),
     )
 
-    thread_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("chat_threads.id", ondelete="CASCADE")
-    )
+    thread_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chat_threads.id", ondelete="CASCADE"))
     role: Mapped[MessageRole] = mapped_column(pg_enum(MessageRole, "message_role"))
     content: Mapped[str] = mapped_column(Text)
     # Citations shown under an assistant reply, so the chips still work when
