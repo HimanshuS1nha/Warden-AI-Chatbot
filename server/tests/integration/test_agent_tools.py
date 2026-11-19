@@ -29,7 +29,7 @@ from warden.models import (
 )
 from warden.services.attendance import AttendanceService
 from warden.services.employee import EmployeeService
-from warden.services.errors import Forbidden, NotFound
+from warden.services.errors import Forbidden, InvalidInput, NotFound
 from warden.services.holiday import HolidayService
 from warden.services.leave import LeaveService
 from warden.services.payslip import PayslipService
@@ -195,6 +195,51 @@ async def test_get_my_attendance_for_a_month_with_nothing_recorded(
 
     assert (result["month"], result["year"], result["days"]) == (1, 2025, [])
     assert "note" in result
+
+
+async def test_get_my_attendance_for_a_range_of_months(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    me = await make_employee()
+    db.add_all(
+        [
+            AttendanceModel(
+                employee_id=me.id, date=date(2026, 1, 5), status=AttendanceStatus.PRESENT
+            ),
+            AttendanceModel(
+                employee_id=me.id, date=date(2026, 1, 6), status=AttendanceStatus.ABSENT
+            ),
+            AttendanceModel(employee_id=me.id, date=date(2026, 3, 2), status=AttendanceStatus.WFH),
+            AttendanceModel(
+                employee_id=me.id, date=date(2026, 3, 3), status=AttendanceStatus.PRESENT
+            ),
+            # Outside the range.
+            AttendanceModel(
+                employee_id=me.id, date=date(2026, 4, 1), status=AttendanceStatus.ABSENT
+            ),
+        ]
+    )
+    await db.flush()
+    tools = tools_for(db, me)
+
+    result = await run(tools["get_my_attendance"], month=1, to_month=3)
+
+    assert result == {
+        "year": 2026,
+        "from_month": 1,
+        "to_month": 3,
+        "months": [
+            {"month": 1, "days_by_status": {"present": 1, "absent": 1}},
+            {"month": 2, "days_by_status": {}},
+            {"month": 3, "days_by_status": {"wfh": 1, "present": 1}},
+        ],
+        "days_not_present": [
+            {"date": "2026-01-06", "status": "absent"},
+            {"date": "2026-03-02", "status": "wfh"},
+        ],
+    }
+    with pytest.raises(InvalidInput, match="can't be before"):
+        await tools["get_my_attendance"].ainvoke({"month": 3, "to_month": 1})
 
 
 async def test_get_my_payslips_newest_first_and_mine_only(

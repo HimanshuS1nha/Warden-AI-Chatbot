@@ -15,7 +15,7 @@ from pydantic import Field
 from warden.core.dependencies import CurrentUser
 from warden.graph.tools.common import Month, Year, company_time
 from warden.graph.tools.services import ToolServices
-from warden.models import LeaveStatus
+from warden.models import AttendanceStatus, LeaveStatus
 from warden.schemas.employee import EmployeeSummaryResponse, ProfileResponse
 from warden.schemas.holiday import HolidayResponse
 from warden.schemas.leave import LeaveBalanceResponse, LeaveRequestResponse
@@ -83,30 +83,70 @@ def build_self_service_tools(user: CurrentUser, services: ToolServices) -> list[
         return json.dumps({"requests": rows})
 
     @tool
-    async def get_my_attendance(month: Month = None, year: Year = None) -> str:
-        """Get the signed-in employee's attendance for one calendar month: each
-        recorded day's status (present, absent, wfh, on_leave, holiday) with
-        check-in and check-out times in company local time, plus a count of
-        days per status. For several months, call it once per month."""
+    async def get_my_attendance(
+        month: Month = None,
+        year: Year = None,
+        to_month: Annotated[
+            int | None,
+            Field(
+                ge=1,
+                le=12,
+                description="For a range in the same year, the last month, e.g. month=1, "
+                "to_month=10 for January to October. Leave out for one month.",
+            ),
+        ] = None,
+    ) -> str:
+        """Get the signed-in employee's attendance (statuses: present, absent,
+        wfh, on_leave, holiday).
+
+        For one month: each recorded day with check-in and check-out times in
+        company local time, plus a count of days per status.
+        For a range of months (set to_month): a count of days per status for
+        each month, and the date and status of every day that wasn't
+        `present`. Use one call for a range instead of one per month."""
         today = services.today()
         month, year = month or today.month, year or today.year
-        days = [
-            {
-                "date": a.date.isoformat(),
-                "status": a.status.value,
-                "check_in": company_time(a.check_in),
-                "check_out": company_time(a.check_out),
+        records = await services.attendance.get_mine(user, month, year, to_month)
+
+        result: dict[str, object]
+        if not to_month or to_month == month:
+            days = [
+                {
+                    "date": a.date.isoformat(),
+                    "status": a.status.value,
+                    "check_in": company_time(a.check_in),
+                    "check_out": company_time(a.check_out),
+                }
+                for a in records
+            ]
+            result = {
+                "month": month,
+                "year": year,
+                "days_by_status": Counter(d["status"] for d in days),
+                "days": days,
             }
-            for a in await services.attendance.get_mine(user, month, year)
-        ]
-        result: dict[str, object] = {
-            "month": month,
-            "year": year,
-            "days_by_status": Counter(d["status"] for d in days),
-            "days": days,
-        }
-        if not days:
-            result["note"] = "No attendance recorded for this month."
+        else:
+            result = {
+                "year": year,
+                "from_month": month,
+                "to_month": to_month,
+                "months": [
+                    {
+                        "month": m,
+                        "days_by_status": Counter(
+                            a.status.value for a in records if a.date.month == m
+                        ),
+                    }
+                    for m in range(month, to_month + 1)
+                ],
+                "days_not_present": [
+                    {"date": a.date.isoformat(), "status": a.status.value}
+                    for a in records
+                    if a.status != AttendanceStatus.PRESENT
+                ],
+            }
+        if not records:
+            result["note"] = "No attendance recorded for this period."
         return json.dumps(result)
 
     @tool

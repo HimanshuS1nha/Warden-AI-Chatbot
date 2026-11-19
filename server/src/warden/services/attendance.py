@@ -24,15 +24,21 @@ class AttendanceService:
         self.db = db
         self.attendance = AttendanceRepository(db)
 
-    async def get_mine(self, user: CurrentUser, month: int, year: int) -> Sequence[AttendanceModel]:
-        """The user's attendance for one calendar month, oldest day first."""
-        if not 1 <= month <= 12:
+    async def get_mine(
+        self, user: CurrentUser, month: int, year: int, to_month: int | None = None
+    ) -> Sequence[AttendanceModel]:
+        """The user's attendance for one calendar month, or from `month` to
+        `to_month` (both included) of the same year, oldest day first."""
+        to_month = to_month or month
+        if not (1 <= month <= 12 and 1 <= to_month <= 12):
             raise InvalidInput("The month must be between 1 and 12.")
+        if to_month < month:
+            raise InvalidInput("The last month can't be before the first.")
         if not date.min.year <= year <= date.max.year:
             raise InvalidInput("That year isn't valid.")
-        last_day = calendar.monthrange(year, month)[1]
+        last_day = calendar.monthrange(year, to_month)[1]
         return await self.attendance.list_for_employee(
-            user.employee_id, date(year, month, 1), date(year, month, last_day)
+            user.employee_id, date(year, month, 1), date(year, to_month, last_day)
         )
 
     async def get_team_for_date(self, user: CurrentUser, day: date) -> list[TeamMemberAttendance]:
