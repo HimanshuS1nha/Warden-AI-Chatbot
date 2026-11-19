@@ -10,13 +10,13 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from warden.core.config import Settings
 from warden.graph.agent import build_chat_model
 from warden.graph.checkpointer import open_checkpointer
 from warden.rag.embeddings import Embedder, build_embedding_client
-from warden.rag.retrievers import InMemoryRetriever, Retriever
+from warden.rag.retrievers import InMemoryRetriever, MinScoreRetriever, Retriever
 from warden.rag.store import ChunkStoreError
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class AgentResources:
-    checkpointer: AsyncPostgresSaver
+    checkpointer: BaseCheckpointSaver[str]
     # None without GEMINI_API_KEY: chat is unavailable, the rest of the app runs.
     chat_model: BaseChatModel | None
     # None without the key or without a chunk store (run ingest): the agent
@@ -52,7 +52,7 @@ async def open_agent_resources(settings: Settings) -> AsyncIterator[AgentResourc
         try:
             store = InMemoryRetriever.load(settings.cache_dir, embedder)
             logger.info("Loaded %d policy chunks for search", len(store))
-            retriever = store
+            retriever = MinScoreRetriever(store, settings.policy_min_score)
         except ChunkStoreError as exc:
             logger.warning("Policy search is disabled: %s", exc)
 

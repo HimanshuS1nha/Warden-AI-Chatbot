@@ -46,7 +46,13 @@ def test_prompt_describes_the_users_role(role: Role, says: str) -> None:
 def test_prompt_has_the_rules() -> None:
     prompt = build_system_prompt(user(Role.EMPLOYEE), THURSDAY)
 
-    for rule in ("cite every policy claim", "<untrusted_document>", "never guess", "confirmed"):
+    for rule in (
+        "cite every policy claim",
+        "search again",
+        "<untrusted_document>",
+        "Never guess",
+        "confirmed",
+    ):
         assert rule in prompt
 
 

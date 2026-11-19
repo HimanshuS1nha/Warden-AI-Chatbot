@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(default=768, gt=0)
     # Gemini accepts at most 100 texts per request.
     embedding_batch_size: int = Field(default=100, gt=0, le=100)
+    # Policy search finds nothing when its best match scores below this
+    # (cosine similarity with the embedding model above). Measured on the
+    # demo documents: relevant questions score 0.70+, off-topic ones
+    # ("how to bake bread") 0.51-0.59. Change it with the embedding model.
+    policy_min_score: float = Field(default=0.6, ge=0, le=1)
 
 
 @lru_cache

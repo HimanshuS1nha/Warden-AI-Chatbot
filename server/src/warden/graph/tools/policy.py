@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 from warden.core.dependencies import CurrentUser
+from warden.graph.tools.common import PARALLEL_SAFE
 from warden.rag.retrievers import RetrievedChunk, Retriever, SearchFilters
 
 # Chunks per search. Enough for an answer that spans sections, few enough to
@@ -19,7 +20,12 @@ from warden.rag.retrievers import RetrievedChunk, Retriever, SearchFilters
 POLICY_RESULTS = 5
 MAX_QUERY_LENGTH = 500
 
-NO_RESULTS = "No policy documents matched this search."
+NO_RESULTS = (
+    "No policy document matched this search closely enough to answer from. Try "
+    "once more with other words if the question could be phrased differently; "
+    "otherwise tell the user the policies available to them don't cover it and "
+    "suggest asking HR. Don't answer from general knowledge."
+)
 
 # Document text is data, not instructions. The tags mark where it starts and
 # ends, and the prompt tells the model never to follow anything inside them.
@@ -65,6 +71,8 @@ def build_policy_tools(user: CurrentUser, retriever: Retriever) -> list[BaseTool
         numbered = [(numbers.setdefault(c.chunk_id, len(numbers) + 1), c) for c in chunks]
         return format_chunks(numbered), [citation(n, c) for n, c in numbered]
 
+    # Calls the embedding API, never the database.
+    search_policies.metadata = {PARALLEL_SAFE: True}
     return [search_policies]
 
 

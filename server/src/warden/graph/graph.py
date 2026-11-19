@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
@@ -14,6 +15,7 @@ from langgraph.types import Command
 
 from warden.graph.agent import MAX_TOOL_CALLS, AgentNode, tool_calls_this_turn
 from warden.graph.state import AgentState
+from warden.graph.tools.common import PARALLEL_SAFE
 from warden.services.errors import ServiceError
 
 
@@ -25,7 +27,7 @@ def tool_error(exc: ToolInvocationError | ServiceError) -> str:
     (not found, forbidden, a broken leave rule) come back as messages. Any
     other exception is a bug and raises. ToolNode filters by this function's
     annotation, except on the path through a tool-call wrapper
-    (`within_tool_limit`), where it passes every exception here; hence the
+    (`ToolCallGuard`), where it passes every exception here; hence the
     explicit re-raise.
     """
     if isinstance(exc, ToolInvocationError):
@@ -41,28 +43,45 @@ OVER_LIMIT = (
 )
 
 
-async def within_tool_limit(
-    request: ToolCallRequest,
-    execute: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-) -> ToolMessage | Command[Any]:
-    """Run the call only if it's within this turn's MAX_TOOL_CALLS.
+ToolExecutor = Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]
 
-    The agent node stops asking for tools at the limit, but one reply can
-    ask for several at once: with 5 used, a reply asking for 3 runs the
-    first and refuses the other 2. A refused call still gets a ToolMessage,
-    because the model expects an answer to every call it made.
+
+class ToolCallGuard:
+    """Wraps every tool call the tools node runs. One per graph, so one per
+    request.
+
+    1. Limit: a call past this turn's MAX_TOOL_CALLS isn't run. The agent node
+       stops asking for tools at the limit, but one reply can ask for several
+       at once: with 5 used, a reply asking for 3 runs the first and refuses
+       the other 2. A refused call still gets a ToolMessage, because the model
+       expects an answer to every call it made.
+    2. One at a time: ToolNode runs a reply's calls concurrently, but the
+       database tools share the request's session, which allows one operation
+       at a time. Calls wait for each other unless the tool is marked
+       PARALLEL_SAFE in its metadata (it doesn't touch the session), so a new
+       tool is safe by default.
     """
-    messages = request.state["messages"]
-    calls = cast(AIMessage, messages[-1])  # The agent's reply that asked for these calls.
-    position = [c["id"] for c in calls.tool_calls].index(request.tool_call["id"])
-    if tool_calls_this_turn(messages[:-1]) + position >= MAX_TOOL_CALLS:
-        return ToolMessage(
-            content=OVER_LIMIT,
-            tool_call_id=request.tool_call["id"],
-            name=request.tool_call["name"],
-            status="error",
-        )
-    return await execute(request)
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+
+    async def __call__(
+        self, request: ToolCallRequest, execute: ToolExecutor
+    ) -> ToolMessage | Command[Any]:
+        messages = request.state["messages"]
+        calls = cast(AIMessage, messages[-1])  # The agent's reply that asked for these calls.
+        position = [c["id"] for c in calls.tool_calls].index(request.tool_call["id"])
+        if tool_calls_this_turn(messages[:-1]) + position >= MAX_TOOL_CALLS:
+            return ToolMessage(
+                content=OVER_LIMIT,
+                tool_call_id=request.tool_call["id"],
+                name=request.tool_call["name"],
+                status="error",
+            )
+        if request.tool is not None and (request.tool.metadata or {}).get(PARALLEL_SAFE):
+            return await execute(request)
+        async with self.lock:
+            return await execute(request)
 
 
 def build_graph(
@@ -88,7 +107,7 @@ def build_graph(
     # the model can't run code. The tools node runs what it asked for.
     builder.add_node("agent", AgentNode(model, tools, system_prompt))
     builder.add_node(
-        "tools", ToolNode(tools, handle_tool_errors=tool_error, awrap_tool_call=within_tool_limit)
+        "tools", ToolNode(tools, handle_tool_errors=tool_error, awrap_tool_call=ToolCallGuard())
     )
     builder.add_edge(START, "agent")
     # Goes to "tools" when the last message has tool calls, otherwise to END.

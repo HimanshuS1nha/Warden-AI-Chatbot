@@ -6,12 +6,15 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid_utils.compat import uuid7
 
+from tests.agent_fakes import PROMPT, ScriptedChatModel, call
 from tests.factories import MakeEmployee, as_user
 from tests.integration.test_leave_service import TODAY, add_balance, add_request
+from warden.graph.graph import build_graph
 from warden.graph.tools.hr import SEARCH_LIMIT, build_hr_tools
 from warden.graph.tools.manager import NOT_RECORDED, build_manager_tools
 from warden.graph.tools.self_service import build_self_service_tools
@@ -500,3 +503,27 @@ async def test_hr_tools_refuse_everyone_else_even_if_given_to_them(
     # it too), so for them a stranger's profile is "not found".
     with pytest.raises((Forbidden, NotFound)):
         await tools_for(db, me)[name].ainvoke(args)
+
+
+async def test_parallel_tool_calls_share_the_request_session_safely(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    """Gemini often asks for several tools in one reply. They all use the
+    request's session, which allows one operation at a time."""
+    me = await make_employee()
+    names = ["get_my_profile", "get_my_leave_balance", "get_my_payslips", "get_my_attendance"]
+    model = ScriptedChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[call(n, f"call_{n}") for n in names]),
+                AIMessage(content="Done."),
+            ]
+        )
+    )
+    graph = build_graph(model, list(tools_for(db, me).values()), PROMPT)
+
+    result = await graph.ainvoke({"messages": [HumanMessage(content="Everything about me")]})
+
+    tool_results = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert [m.name for m in tool_results] == names
+    assert all(m.status == "success" for m in tool_results)

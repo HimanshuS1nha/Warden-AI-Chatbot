@@ -10,6 +10,7 @@ doesn't exist, so callers can't tell the two apart.
 """
 
 from warden.repositories.attendance import AttendanceRepository
+from warden.repositories.chat import ChatRepository
 from warden.repositories.employee import EmployeeRepository
 from warden.repositories.holiday import HolidayRepository
 from warden.repositories.leave import LeaveRepository
@@ -17,6 +18,7 @@ from warden.repositories.payslip import PayslipRepository
 
 __all__ = [
     "AttendanceRepository",
+    "ChatRepository",
     "EmployeeRepository",
     "HolidayRepository",
     "LeaveRepository",

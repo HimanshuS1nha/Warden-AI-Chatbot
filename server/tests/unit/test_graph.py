@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from datetime import date
@@ -13,6 +14,7 @@ from warden.core.dependencies import CurrentUser
 from warden.graph.agent import GAVE_UP, MAX_TOOL_CALLS, tool_calls_this_turn
 from warden.graph.graph import OVER_LIMIT, build_graph
 from warden.graph.prompts import TOOL_LIMIT_NOTE
+from warden.graph.tools.common import PARALLEL_SAFE
 from warden.graph.tools.self_service import build_self_service_tools
 from warden.graph.tools.services import ToolServices
 from warden.models import Role
@@ -219,3 +221,53 @@ def test_only_this_turns_tool_calls_count() -> None:
 
     assert tool_calls_this_turn(earlier_turn + this_turn) == 3
     assert tool_calls_this_turn(earlier_turn + [HumanMessage(content="Third")]) == 0
+
+
+# Running calls one at a time
+
+ready = asyncio.Event()
+
+
+@tool
+async def wait_for_signal() -> str:
+    """Waits until signal() has run."""
+    await asyncio.wait_for(ready.wait(), timeout=1)
+    return "got it"
+
+
+@tool
+async def signal() -> str:
+    """Lets wait_for_signal() finish."""
+    ready.set()
+    return "sent"
+
+
+async def test_tool_calls_run_one_at_a_time_unless_parallel_safe() -> None:
+    def reply() -> AIMessage:
+        return AIMessage(
+            content="",
+            tool_calls=[call("wait_for_signal", "call_wait"), call("signal", "call_signal")],
+        )
+
+    # Serialised, the waiting tool holds the lock and signal() can't run.
+    ready.clear()
+    model = ScriptedChatModel(messages=iter([reply(), AIMessage(content="Done.")]))
+    with pytest.raises(TimeoutError):
+        await build_graph(model, [wait_for_signal, signal], PROMPT).ainvoke(
+            {"messages": [HumanMessage(content="Go")]}
+        )
+
+    # Marked parallel safe, it waits outside the lock and both finish.
+    ready.clear()
+    wait_for_signal.metadata = {PARALLEL_SAFE: True}
+    model = ScriptedChatModel(messages=iter([reply(), AIMessage(content="Done.")]))
+    try:
+        result = await build_graph(model, [wait_for_signal, signal], PROMPT).ainvoke(
+            {"messages": [HumanMessage(content="Go")]}
+        )
+    finally:
+        wait_for_signal.metadata = None
+    assert [m.content for m in result["messages"] if isinstance(m, ToolMessage)] == [
+        "got it",
+        "sent",
+    ]

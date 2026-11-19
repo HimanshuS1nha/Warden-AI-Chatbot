@@ -7,6 +7,10 @@ from pydantic import Field
 
 from warden.scripts import company as co
 
+# Tool metadata key: the tool doesn't use the request's database session, so
+# it may run at the same time as other calls in one reply. See ToolCallGuard.
+PARALLEL_SAFE = "parallel_safe"
+
 Year = Annotated[
     int | None,
     Field(ge=2000, le=2100, description="Calendar year, e.g. 2026. Leave out for this year."),
