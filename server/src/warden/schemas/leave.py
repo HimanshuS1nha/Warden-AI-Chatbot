@@ -41,6 +41,17 @@ class TeamLeaveRequestResponse(LeaveRequestResponse):
     employee: EmployeeSummaryResponse
 
 
+class EmployeeLeaveSummaryResponse(BaseModel):
+    """One employee's balances for a year and their recent requests, for HR."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    employee: EmployeeSummaryResponse
+    year: int
+    balances: list[LeaveBalanceResponse]
+    recent_requests: list[LeaveRequestResponse]
+
+
 class LeaveApplication(BaseModel):
     leave_type: LeaveType
     start_date: date

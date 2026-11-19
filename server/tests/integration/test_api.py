@@ -4,6 +4,7 @@ log in for real, call the route, check the response and the database.
 Leave dates are relative to a fixed TODAY, Monday 1 June 2026.
 """
 
+import uuid
 from collections.abc import Iterator
 from datetime import date, timedelta
 from decimal import Decimal
@@ -367,3 +368,34 @@ async def test_viewing_an_employee_is_scoped(
 
     await login(client, org["report"])
     assert (await client.get(f"/api/employees/{org['manager'].id}")).status_code == 403
+
+
+async def test_hr_reads_an_employees_leave_summary(
+    client: AsyncClient, db: AsyncSession, org: dict[str, EmployeeModel]
+) -> None:
+    await add_balance(db, org["outsider"], allotted=12, used=1)
+    request = await add_request(
+        db, org["outsider"], TODAY + timedelta(days=7), TODAY + timedelta(days=7)
+    )
+    await login(client, org["hr"])
+
+    response = await client.get(f"/api/employees/{org['outsider'].id}/leave")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["employee"]["name"], body["year"]) == ("Ola Outsider", 2026)
+    assert [(b["leave_type"], b["available"]) for b in body["balances"]] == [("casual", 10)]
+    assert [r["id"] for r in body["recent_requests"]] == [str(request.id)]
+    assert len(await audit_rows(db, AuditAction.EMPLOYEE_VIEW)) == 1
+    missing = await client.get(f"/api/employees/{uuid.uuid4()}/leave")
+    assert missing.status_code == 404
+
+
+async def test_managers_cant_read_leave_summaries_even_for_their_reports(
+    client: AsyncClient, org: dict[str, EmployeeModel]
+) -> None:
+    await login(client, org["manager"])
+
+    response = await client.get(f"/api/employees/{org['report'].id}/leave")
+
+    assert response.status_code == 403

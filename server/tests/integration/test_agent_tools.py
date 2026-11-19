@@ -8,15 +8,18 @@ from typing import Any
 import pytest
 from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid_utils.compat import uuid7
 
 from tests.factories import MakeEmployee, as_user
 from tests.integration.test_leave_service import TODAY, add_balance, add_request
+from warden.graph.tools.hr import SEARCH_LIMIT, build_hr_tools
 from warden.graph.tools.manager import NOT_RECORDED, build_manager_tools
 from warden.graph.tools.self_service import build_self_service_tools
 from warden.graph.tools.services import ToolServices
 from warden.models import (
     AttendanceModel,
     AttendanceStatus,
+    DepartmentModel,
     EmployeeModel,
     HolidayModel,
     LeaveStatus,
@@ -26,16 +29,16 @@ from warden.models import (
 )
 from warden.services.attendance import AttendanceService
 from warden.services.employee import EmployeeService
-from warden.services.errors import Forbidden
+from warden.services.errors import Forbidden, NotFound
 from warden.services.holiday import HolidayService
 from warden.services.leave import LeaveService
 from warden.services.payslip import PayslipService
 
 
 def tools_for(db: AsyncSession, employee: EmployeeModel) -> dict[str, BaseTool]:
-    """The self-service and team tools for `employee`, with TODAY (1 June 2026)
-    as the date. Team tools are built for every role here, so tests can check
-    the services still refuse non-managers."""
+    """Every tool for `employee`, with TODAY (1 June 2026) as the date. The
+    manager and HR tools are built for every role here, so tests can check
+    the services still refuse the wrong role."""
     services = ToolServices(
         employees=EmployeeService(db),
         leave=LeaveService(db, today=lambda: TODAY),
@@ -45,7 +48,11 @@ def tools_for(db: AsyncSession, employee: EmployeeModel) -> dict[str, BaseTool]:
         today=lambda: TODAY,
     )
     user = as_user(employee)
-    tools = build_self_service_tools(user, services) + build_manager_tools(user, services)
+    tools = (
+        build_self_service_tools(user, services)
+        + build_manager_tools(user, services)
+        + build_hr_tools(user, services)
+    )
     return {t.name: t for t in tools}
 
 
@@ -353,3 +360,98 @@ async def test_team_tools_refuse_non_managers_even_if_given_to_them(
 
     with pytest.raises(Forbidden):
         await tools_for(db, me)[name].ainvoke({})
+
+
+async def test_search_employees_returns_ids_for_the_next_tools(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    hr = await make_employee(role=Role.HR)
+    sales = DepartmentModel(name="Sales")
+    db.add(sales)
+    await db.flush()
+    ravi = await make_employee(name="Ravi Kumar", department_id=sales.id, job_title="Rep")
+    await make_employee(name="Ravi Left", is_active=False)
+    await make_employee(name="Someone Else")
+    tools = tools_for(db, hr)
+
+    by_name = await run(tools["search_employees"], name="RAVI")
+    by_department = await run(tools["search_employees"], department="sales")
+    nobody = await run(tools["search_employees"], name="zzz")
+
+    expected = {
+        "id": str(ravi.id),
+        "employee_code": ravi.employee_code,
+        "name": "Ravi Kumar",
+        "email": ravi.email,
+        "job_title": "Rep",
+        "role": "employee",
+        "department": "Sales",
+    }
+    assert by_name == {"employees": [expected]}
+    assert by_department == {"employees": [expected]}
+    assert nobody["employees"] == [] and "note" in nobody
+
+
+async def test_search_employees_says_when_results_are_cut_off(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    hr = await make_employee(role=Role.HR, name="HR Person")
+    for i in range(SEARCH_LIMIT + 1):
+        await make_employee(name=f"Clone {i:02}")
+
+    result = await run(tools_for(db, hr)["search_employees"], name="clone")
+
+    assert len(result["employees"]) == SEARCH_LIMIT
+    assert "note" in result
+
+
+async def test_get_employee_profile_includes_the_manager_id(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    hr = await make_employee(role=Role.HR)
+    boss = await make_employee(role=Role.MANAGER)
+    ravi = await make_employee(manager_id=boss.id, is_active=False)
+    tools = tools_for(db, hr)
+
+    profile = await run(tools["get_employee_profile"], employee_id=str(ravi.id))
+
+    assert (profile["id"], profile["manager_id"]) == (str(ravi.id), str(boss.id))
+    assert profile["is_active"] is False
+    assert isinstance(profile["department"], str) and "department_id" not in profile
+    with pytest.raises(NotFound):
+        await tools["get_employee_profile"].ainvoke({"employee_id": str(uuid7())})
+
+
+async def test_get_employee_leave_summary(db: AsyncSession, make_employee: MakeEmployee) -> None:
+    hr = await make_employee(role=Role.HR)
+    ravi = await make_employee(name="Ravi")
+    await add_balance(db, ravi, allotted=12, used=3)
+    request = await add_request(db, ravi, date(2026, 6, 8), date(2026, 6, 9), reason="Trip")
+
+    result = await run(tools_for(db, hr)["get_employee_leave_summary"], employee_id=str(ravi.id))
+
+    assert result["employee"] == {"name": "Ravi", "id": str(ravi.id)}
+    assert result["year"] == 2026
+    assert result["balances"] == [
+        {"leave_type": "casual", "allotted": 12, "used": 3, "pending": 2, "available": 7}
+    ]
+    [row] = result["recent_requests"]
+    assert (row["id"], row["reason"], row["status"]) == (str(request.id), "Trip", "pending")
+    assert "approver_id" not in row and row["created_at"].endswith("+05:30")
+
+
+@pytest.mark.parametrize(
+    "name", ["search_employees", "get_employee_profile", "get_employee_leave_summary"]
+)
+@pytest.mark.parametrize("role", [Role.EMPLOYEE, Role.MANAGER])
+async def test_hr_tools_refuse_everyone_else_even_if_given_to_them(
+    db: AsyncSession, make_employee: MakeEmployee, name: str, role: Role
+) -> None:
+    me = await make_employee(role=role)
+    stranger = await make_employee()
+    args = {} if name == "search_employees" else {"employee_id": str(stranger.id)}
+
+    # A manager may view their own reports' profiles (the REST route allows
+    # it too), so for them a stranger's profile is "not found".
+    with pytest.raises((Forbidden, NotFound)):
+        await tools_for(db, me)[name].ainvoke(args)

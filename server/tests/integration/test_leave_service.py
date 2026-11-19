@@ -609,6 +609,57 @@ async def test_team_requests_are_the_managers_reports_only(
         await leave.list_team_requests(as_user(employee))
 
 
+async def test_hr_reads_any_employees_leave_summary_and_it_is_audited(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    hr = await make_employee(role=Role.HR)
+    ravi = await make_employee(is_active=False)  # People who have left too.
+    await add_balance(db, ravi, allotted=12, used=2)
+    await add_balance(db, ravi, allotted=10, year=2025)
+    older = await add_request(db, ravi, date(2025, 12, 1), date(2025, 12, 1))
+    newer = await add_request(db, ravi, TODAY + days(7), TODAY + days(8))
+
+    summary = await service(db).get_employee_summary(as_user(hr), ravi.id)
+    last_year = await service(db).get_employee_summary(as_user(hr), ravi.id, 2025, limit=1)
+
+    assert (summary.employee.id, summary.year) == (ravi.id, 2026)
+    [casual] = summary.balances
+    assert (casual.allotted, casual.used, casual.pending, casual.available) == (12, 2, 2, 8)
+    assert [r.id for r in summary.recent_requests] == [newer.id, older.id]
+    assert last_year.year == 2025 and [b.allotted for b in last_year.balances] == [10]
+    assert [r.id for r in last_year.recent_requests] == [newer.id]
+    rows = await audit_rows(db, AuditAction.EMPLOYEE_VIEW)
+    assert [(r.outcome, r.actor_id, r.target_id, r.details) for r in rows] == [
+        (AuditOutcome.ALLOWED, hr.id, ravi.id, {"view": "leave_summary", "year": 2026}),
+        (AuditOutcome.ALLOWED, hr.id, ravi.id, {"view": "leave_summary", "year": 2025}),
+    ]
+
+
+@pytest.mark.parametrize("role", [Role.MANAGER, Role.EMPLOYEE])
+async def test_only_hr_reads_leave_summaries(
+    db: AsyncSession, make_employee: MakeEmployee, role: Role
+) -> None:
+    caller = await make_employee(role=role)
+    report = await make_employee(manager_id=caller.id)  # Even the caller's own report.
+
+    with pytest.raises(Forbidden):
+        await service(db).get_employee_summary(as_user(caller), report.id)
+
+    assert await audit_rows(db, AuditAction.EMPLOYEE_VIEW) == []
+    assert len(await audit_rows(db, AuditAction.AUTHZ_FORBIDDEN)) == 1
+
+
+async def test_leave_summary_of_an_unknown_employee_is_not_found(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    hr = await make_employee(role=Role.HR)
+
+    with pytest.raises(NotFound, match="Employee not found"):
+        await service(db).get_employee_summary(as_user(hr), uuid.uuid4())
+
+    assert await audit_rows(db, AuditAction.EMPLOYEE_VIEW) == []
+
+
 # Concurrency
 
 

@@ -4,7 +4,9 @@ from datetime import date
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
 
 from tests.agent_fakes import call, script
 from warden.core.dependencies import CurrentUser
@@ -12,6 +14,7 @@ from warden.graph.graph import build_graph
 from warden.graph.tools.self_service import build_self_service_tools
 from warden.graph.tools.services import ToolServices
 from warden.models import Role
+from warden.services.errors import InsufficientBalance, NotFound
 
 USER = CurrentUser(
     employee_id=uuid.uuid4(),
@@ -101,3 +104,45 @@ async def test_invalid_arguments_go_back_to_the_model_as_an_error() -> None:
     assert isinstance(tool_result, ToolMessage)
     assert tool_result.status == "error"
     assert "year" in str(tool_result.content)
+
+
+@tool
+async def look_up(kind: str) -> str:
+    """Fails the way services do."""
+    if kind == "missing":
+        raise NotFound("Employee not found.")
+    if kind == "balance":
+        raise InsufficientBalance("Not enough casual leave.", available=2, asked=date(2026, 6, 8))
+    raise RuntimeError("a bug")
+
+
+async def test_service_errors_go_back_to_the_model_with_their_code() -> None:
+    model = script(
+        call("look_up", "call_1", kind="missing"),
+        call("look_up", "call_2", kind="balance"),
+        "Done.",
+    )
+    graph = build_graph(model, [look_up])
+
+    result = await graph.ainvoke({"messages": [HumanMessage(content="Look them up")]})
+
+    missing, balance = (m for m in result["messages"] if isinstance(m, ToolMessage))
+    assert missing.status == "error"
+    assert json.loads(str(missing.content)) == {
+        "error": "not_found",
+        "message": "Employee not found.",
+    }
+    assert json.loads(str(balance.content)) == {
+        "error": "insufficient_balance",
+        "message": "Not enough casual leave.",
+        "available": 2,
+        "asked": "2026-06-08",
+    }
+    assert result["messages"][-1].content == "Done."
+
+
+async def test_other_exceptions_are_bugs_and_still_raise() -> None:
+    graph = build_graph(script(call("look_up", kind="other"), "unreachable"), [look_up])
+
+    with pytest.raises(RuntimeError, match="a bug"):
+        await graph.ainvoke({"messages": [HumanMessage(content="Look it up")]})

@@ -12,6 +12,8 @@ The rules (plan.md, "Business rules for leave"; Leave Policy v2):
   haven't started. Cancelling approved leave gives the days back.
 - Managers approve or reject pending requests of their direct reports only.
   Nobody approves their own request, and HR can't approve for a manager.
+- HR can read anyone's balances and requests; each read is audited as
+  `employee.view`.
 
 Every write and every refusal of a write is audited. Writes commit here, in
 the same transaction as their audit row.
@@ -30,13 +32,14 @@ from warden.models import (
     AuditAction,
     AuditOutcome,
     AuditTarget,
+    EmployeeModel,
     LeaveBalanceModel,
     LeaveRequestModel,
     LeaveStatus,
     LeaveType,
     Role,
 )
-from warden.repositories import HolidayRepository, LeaveRepository
+from warden.repositories import EmployeeRepository, HolidayRepository, LeaveRepository
 from warden.scripts import company as co
 from warden.services import audit
 from warden.services.access import ensure_role
@@ -55,6 +58,7 @@ from warden.services.leave_days import count_working_days
 
 MAX_REASON_LENGTH = 1000
 MAX_COMMENT_LENGTH = 1000
+DEFAULT_SUMMARY_REQUESTS = 10
 
 
 def company_today() -> date:
@@ -84,6 +88,18 @@ class BalanceSummary:
     available: int
 
 
+@dataclass(frozen=True)
+class EmployeeLeaveSummary:
+    """One employee's leave at a glance, for HR."""
+
+    # Loaded with its department.
+    employee: EmployeeModel
+    year: int
+    balances: list[BalanceSummary]
+    # Latest start date first, any year and status.
+    recent_requests: Sequence[LeaveRequestModel]
+
+
 def check_dates(leave_type: LeaveType, start: date, end: date, today: date) -> None:
     """The date rules that need no database. Raises InvalidDates or
     BackdateNotAllowed."""
@@ -111,6 +127,7 @@ class LeaveService:
         self.db = db
         self.leave = LeaveRepository(db)
         self.holidays = HolidayRepository(db)
+        self.employees = EmployeeRepository(db)
         # Injectable so tests don't depend on the real date.
         self.today = today
 
@@ -120,10 +137,12 @@ class LeaveService:
         self, user: CurrentUser, year: int | None = None
     ) -> list[BalanceSummary]:
         """The user's balances for `year` (default: this year), one per type."""
-        year = year or self.today().year
+        return await self._balances(user.employee_id, year or self.today().year)
+
+    async def _balances(self, employee_id: uuid.UUID, year: int) -> list[BalanceSummary]:
         summaries = []
-        for balance in await self.leave.get_balances(user.employee_id, year):
-            pending = await self.leave.pending_days(user.employee_id, year, balance.leave_type)
+        for balance in await self.leave.get_balances(employee_id, year):
+            pending = await self.leave.pending_days(employee_id, year, balance.leave_type)
             summaries.append(
                 BalanceSummary(
                     leave_type=balance.leave_type,
@@ -140,6 +159,43 @@ class LeaveService:
         self, user: CurrentUser, status: LeaveStatus | None = None, limit: int = 20
     ) -> Sequence[LeaveRequestModel]:
         return await self.leave.list_requests(user.employee_id, status, _clamp_limit(limit))
+
+    async def get_employee_summary(
+        self,
+        user: CurrentUser,
+        employee_id: uuid.UUID,
+        year: int | None = None,
+        limit: int = DEFAULT_SUMMARY_REQUESTS,
+    ) -> EmployeeLeaveSummary:
+        """HR only. Any employee's balances for `year` (default: this year)
+        and their `limit` most recent requests. Inactive employees too, for
+        questions about people who have left.
+
+        Raises NotFound for an unknown ID. Every successful read is audited as
+        `employee.view` with the employee as target, like viewing a profile.
+        """
+        await ensure_role(self.db, user, Role.HR, operation="leave.employee_summary")
+        employee = await self.employees.get(employee_id)
+        if employee is None:
+            raise NotFound("Employee not found.")
+        year = year or self.today().year
+        summary = EmployeeLeaveSummary(
+            employee=employee,
+            year=year,
+            balances=await self._balances(employee_id, year),
+            recent_requests=await self.leave.list_requests(employee_id, None, _clamp_limit(limit)),
+        )
+        audit.record(
+            self.db,
+            action=AuditAction.EMPLOYEE_VIEW,
+            outcome=AuditOutcome.ALLOWED,
+            actor_id=user.employee_id,
+            target_type=AuditTarget.EMPLOYEE,
+            target_id=employee_id,
+            details={"view": "leave_summary", "year": year},
+        )
+        await self.db.commit()
+        return summary
 
     async def list_team_requests(
         self, user: CurrentUser, status: LeaveStatus | None = None, limit: int = 50

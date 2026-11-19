@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, Query
 
 from warden.core.dependencies import CurrentUser, require_role
 from warden.models import Role
-from warden.routers.services import EmployeeServiceDep
+from warden.routers.services import EmployeeServiceDep, LeaveServiceDep
 from warden.schemas.employee import ProfileResponse
+from warden.schemas.leave import EmployeeLeaveSummaryResponse
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
@@ -38,3 +39,17 @@ async def get_employee(
     """404 for an ID outside the caller's scope, the same as for one that
     doesn't exist."""
     return ProfileResponse.model_validate(await employees.get_employee(user, employee_id))
+
+
+@router.get("/{employee_id}/leave")
+async def get_employee_leave_summary(
+    employee_id: uuid.UUID,
+    user: HRUser,
+    leave: LeaveServiceDep,
+    year: Annotated[int | None, Query(ge=2000, le=2100)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+) -> EmployeeLeaveSummaryResponse:
+    """HR only: the employee's balances for `year` (default: this year) and
+    their most recent requests. Audited as `employee.view`."""
+    summary = await leave.get_employee_summary(user, employee_id, year, limit)
+    return EmployeeLeaveSummaryResponse.model_validate(summary)
