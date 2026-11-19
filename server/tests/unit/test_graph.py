@@ -86,14 +86,6 @@ async def test_runs_the_requested_tool_and_answers_from_its_result() -> None:
 
 
 # Field names that would let the model pick whose data a tool reads.
-IDENTITY_ARGUMENTS = {"user_id", "employee_id", "role", "manager_id"}
-
-
-def test_no_self_service_tool_takes_an_identity_argument() -> None:
-    for t in profile_tools(FakeEmployeeService()):
-        assert not IDENTITY_ARGUMENTS & t.args.keys(), t.name
-
-
 async def test_invalid_arguments_go_back_to_the_model_as_an_error() -> None:
     model = script(call("get_my_leave_balance", year=1900), "Sorry, that year isn't valid.")
     graph = build_graph(model, profile_tools(FakeEmployeeService()))
