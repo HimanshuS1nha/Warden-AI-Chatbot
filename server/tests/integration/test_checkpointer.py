@@ -11,7 +11,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from tests.agent_fakes import script
+from tests.agent_fakes import PROMPT, script
 from warden.core.config import get_settings
 from warden.graph.checkpointer import open_checkpointer
 from warden.graph.graph import build_graph
@@ -28,13 +28,13 @@ async def test_a_thread_continues_where_it_stopped() -> None:
 
     async with open_checkpointer(url) as checkpointer:
         try:
-            graph = build_graph(script("Hello", "Hi again"), [], checkpointer)
+            graph = build_graph(script("Hello", "Hi again"), [], PROMPT, checkpointer)
             await graph.ainvoke({"messages": [HumanMessage(content="Hi")]}, thread(first))
             await graph.ainvoke({"messages": [HumanMessage(content="Again")]}, thread(second))
 
             # A new pool and graph, like after a restart, still sees the thread.
             async with open_checkpointer(url) as reopened:
-                result = await build_graph(script("Yes"), [], reopened).ainvoke(
+                result = await build_graph(script("Yes"), [], PROMPT, reopened).ainvoke(
                     {"messages": [HumanMessage(content="Still there?")]}, thread(first)
                 )
 

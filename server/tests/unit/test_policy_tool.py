@@ -5,7 +5,7 @@ import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
-from tests.agent_fakes import call, script
+from tests.agent_fakes import PROMPT, call, script
 from tests.rag_fakes import FakeEmbeddingClient, no_sleep
 from warden.core.dependencies import CurrentUser
 from warden.graph.graph import build_graph
@@ -148,7 +148,7 @@ async def test_the_model_sees_the_excerpts_and_the_artifact_stays_on_the_message
         call("search_policies", query="carry forward casual leave"),
         "Up to 5 days carry forward [1].",
     )
-    graph = build_graph(model, build_policy_tools(user(Role.EMPLOYEE), retriever))
+    graph = build_graph(model, build_policy_tools(user(Role.EMPLOYEE), retriever), PROMPT)
 
     result = await graph.ainvoke({"messages": [HumanMessage(content="Can I carry forward?")]})
 
