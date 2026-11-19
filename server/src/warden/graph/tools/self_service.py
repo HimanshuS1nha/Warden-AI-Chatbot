@@ -7,35 +7,19 @@ cancel a request later.
 
 import json
 from collections import Counter
-from datetime import datetime
 from typing import Annotated
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 from warden.core.dependencies import CurrentUser
+from warden.graph.tools.common import Month, Year, company_time
 from warden.graph.tools.services import ToolServices
 from warden.models import LeaveStatus
 from warden.schemas.employee import EmployeeSummaryResponse, ProfileResponse
 from warden.schemas.holiday import HolidayResponse
 from warden.schemas.leave import LeaveBalanceResponse, LeaveRequestResponse
 from warden.schemas.payslip import PayslipResponse
-from warden.scripts import company as co
-
-Year = Annotated[
-    int | None,
-    Field(ge=2000, le=2100, description="Calendar year, e.g. 2026. Leave out for this year."),
-]
-Month = Annotated[
-    int | None,
-    Field(ge=1, le=12, description="Month number, 1 to 12. Leave out for this month."),
-]
-
-
-def _company_time(moment: datetime | None) -> str | None:
-    """A stored UTC time in the company's timezone, so the model says 09:00
-    for a 09:00 check-in instead of the UTC 03:30."""
-    return moment.astimezone(co.TIMEZONE).isoformat(timespec="minutes") if moment else None
 
 
 def build_self_service_tools(user: CurrentUser, services: ToolServices) -> list[BaseTool]:
@@ -93,8 +77,8 @@ def build_self_service_tools(user: CurrentUser, services: ToolServices) -> list[
             row = LeaveRequestResponse.model_validate(request).model_dump(
                 mode="json", exclude={"approver_id"}
             )
-            row["created_at"] = _company_time(request.created_at)
-            row["decided_at"] = _company_time(request.decided_at)
+            row["created_at"] = company_time(request.created_at)
+            row["decided_at"] = company_time(request.decided_at)
             rows.append(row)
         return json.dumps({"requests": rows})
 
@@ -110,8 +94,8 @@ def build_self_service_tools(user: CurrentUser, services: ToolServices) -> list[
             {
                 "date": a.date.isoformat(),
                 "status": a.status.value,
-                "check_in": _company_time(a.check_in),
-                "check_out": _company_time(a.check_out),
+                "check_in": company_time(a.check_in),
+                "check_out": company_time(a.check_out),
             }
             for a in await services.attendance.get_mine(user, month, year)
         ]

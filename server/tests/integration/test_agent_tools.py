@@ -5,11 +5,13 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.factories import MakeEmployee, as_user
 from tests.integration.test_leave_service import TODAY, add_balance, add_request
+from warden.graph.tools.manager import NOT_RECORDED, build_manager_tools
 from warden.graph.tools.self_service import build_self_service_tools
 from warden.graph.tools.services import ToolServices
 from warden.models import (
@@ -24,13 +26,16 @@ from warden.models import (
 )
 from warden.services.attendance import AttendanceService
 from warden.services.employee import EmployeeService
+from warden.services.errors import Forbidden
 from warden.services.holiday import HolidayService
 from warden.services.leave import LeaveService
 from warden.services.payslip import PayslipService
 
 
 def tools_for(db: AsyncSession, employee: EmployeeModel) -> dict[str, BaseTool]:
-    """The self-service tools for `employee`, with TODAY (1 June 2026) as the date."""
+    """The self-service and team tools for `employee`, with TODAY (1 June 2026)
+    as the date. Team tools are built for every role here, so tests can check
+    the services still refuse non-managers."""
     services = ToolServices(
         employees=EmployeeService(db),
         leave=LeaveService(db, today=lambda: TODAY),
@@ -39,7 +44,9 @@ def tools_for(db: AsyncSession, employee: EmployeeModel) -> dict[str, BaseTool]:
         holidays=HolidayService(db, today=lambda: TODAY),
         today=lambda: TODAY,
     )
-    return {t.name: t for t in build_self_service_tools(as_user(employee), services)}
+    user = as_user(employee)
+    tools = build_self_service_tools(user, services) + build_manager_tools(user, services)
+    return {t.name: t for t in tools}
 
 
 async def run(tool: BaseTool, **args: Any) -> Any:
@@ -235,3 +242,114 @@ async def test_get_company_holidays_for_this_year_and_another(
         ],
     }
     assert [h["date"] for h in next_year["holidays"]] == ["2027-01-26"]
+
+
+async def test_list_my_team_is_my_active_reports_only(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    boss = await make_employee(role=Role.MANAGER)
+    other_boss = await make_employee(role=Role.MANAGER)
+    ana = await make_employee(manager_id=boss.id, name="Ana", job_title="Engineer")
+    await make_employee(manager_id=boss.id, name="Ben", is_active=False)
+    await make_employee(manager_id=other_boss.id, name="Cara")
+    loner = await make_employee(role=Role.MANAGER)
+
+    result = await run(tools_for(db, boss)["list_my_team"])
+    empty = await run(tools_for(db, loner)["list_my_team"])
+
+    assert result == {
+        "team": [
+            {
+                "employee_code": ana.employee_code,
+                "name": "Ana",
+                "email": ana.email,
+                "job_title": "Engineer",
+            }
+        ]
+    }
+    assert empty["team"] == [] and "note" in empty
+
+
+async def test_get_team_leave_requests_covers_my_reports_and_filters_by_status(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    boss = await make_employee(role=Role.MANAGER)
+    other_boss = await make_employee(role=Role.MANAGER)
+    ana = await make_employee(manager_id=boss.id, name="Ana")
+    outsider = await make_employee(manager_id=other_boss.id)
+    pending = await add_request(db, ana, date(2026, 6, 8), date(2026, 6, 9), reason="Wedding")
+    await add_request(db, ana, date(2026, 5, 4), date(2026, 5, 4), status=LeaveStatus.APPROVED)
+    await add_request(db, outsider, date(2026, 6, 10), date(2026, 6, 10))
+    tools = tools_for(db, boss)
+
+    everything = await run(tools["get_team_leave_requests"])
+    only_pending = await run(tools["get_team_leave_requests"], status="pending")
+    rejected = await run(tools["get_team_leave_requests"], status="rejected")
+
+    assert len(everything["requests"]) == 2
+    [row] = only_pending["requests"]
+    assert row["id"] == str(pending.id)
+    assert row["employee"] == {"name": "Ana", "employee_code": ana.employee_code}
+    assert (row["days"], row["reason"], row["status"]) == (2, "Wedding", "pending")
+    assert "approver_id" not in row
+    assert row["created_at"].endswith("+05:30")
+    assert rejected["requests"] == [] and "note" in rejected
+
+
+async def test_get_team_attendance_defaults_to_today_and_marks_missing_days(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    boss = await make_employee(role=Role.MANAGER)
+    ana = await make_employee(manager_id=boss.id, name="Ana")
+    ben = await make_employee(manager_id=boss.id, name="Ben")
+    outsider = await make_employee()
+    db.add_all(
+        [
+            AttendanceModel(
+                employee_id=ana.id,
+                date=TODAY,
+                status=AttendanceStatus.PRESENT,
+                check_in=datetime(2026, 6, 1, 3, 30, tzinfo=UTC),
+            ),
+            AttendanceModel(
+                employee_id=ben.id, date=date(2026, 5, 29), status=AttendanceStatus.WFH
+            ),
+            AttendanceModel(employee_id=outsider.id, date=TODAY, status=AttendanceStatus.ABSENT),
+        ]
+    )
+    await db.flush()
+    tools = tools_for(db, boss)
+
+    today = await run(tools["get_team_attendance"])
+    friday = await run(tools["get_team_attendance"], date="2026-05-29")
+
+    assert today["date"] == "2026-06-01"
+    assert today["people_by_status"] == {"present": 1, NOT_RECORDED: 1}
+    assert today["members"] == [
+        {
+            "name": "Ana",
+            "employee_code": ana.employee_code,
+            "status": "present",
+            "check_in": "2026-06-01T09:00+05:30",
+            "check_out": None,
+        },
+        {
+            "name": "Ben",
+            "employee_code": ben.employee_code,
+            "status": NOT_RECORDED,
+            "check_in": None,
+            "check_out": None,
+        },
+    ]
+    assert friday["people_by_status"] == {NOT_RECORDED: 1, "wfh": 1}
+
+
+@pytest.mark.parametrize("name", ["list_my_team", "get_team_leave_requests", "get_team_attendance"])
+@pytest.mark.parametrize("role", [Role.EMPLOYEE, Role.HR])
+async def test_team_tools_refuse_non_managers_even_if_given_to_them(
+    db: AsyncSession, make_employee: MakeEmployee, name: str, role: Role
+) -> None:
+    me = await make_employee(role=role)
+
+    with pytest.raises(Forbidden):
+        await tools_for(db, me)[name].ainvoke({})
