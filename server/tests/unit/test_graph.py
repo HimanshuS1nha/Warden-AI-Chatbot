@@ -10,8 +10,8 @@ from tests.agent_fakes import call, script
 from warden.core.dependencies import CurrentUser
 from warden.graph.graph import build_graph
 from warden.graph.tools.self_service import build_self_service_tools
+from warden.graph.tools.services import ToolServices
 from warden.models import Role
-from warden.services.employee import EmployeeService
 
 USER = CurrentUser(
     employee_id=uuid.uuid4(),
@@ -44,7 +44,8 @@ class FakeEmployeeService:
 
 
 def profile_tools(service: FakeEmployeeService):  # type: ignore[no-untyped-def]
-    return build_self_service_tools(USER, cast(EmployeeService, service))
+    services = SimpleNamespace(employees=service, leave=None)
+    return build_self_service_tools(USER, cast(ToolServices, services))
 
 
 async def test_answers_without_tools_when_none_are_needed() -> None:
@@ -78,10 +79,25 @@ async def test_runs_the_requested_tool_and_answers_from_its_result() -> None:
     assert answer.content == "You're a Software Engineer in Engineering."
     # The tool read the session's user, not anyone the model named.
     assert service.asked_for == [USER]
-    assert model.bound_tools == ["get_my_profile"]
+    assert "get_my_profile" in model.bound_tools
 
 
-def test_get_my_profile_takes_no_arguments() -> None:
-    [get_my_profile] = profile_tools(FakeEmployeeService())
+# Field names that would let the model pick whose data a tool reads.
+IDENTITY_ARGUMENTS = {"user_id", "employee_id", "role", "manager_id"}
 
-    assert get_my_profile.args == {}
+
+def test_no_self_service_tool_takes_an_identity_argument() -> None:
+    for t in profile_tools(FakeEmployeeService()):
+        assert not IDENTITY_ARGUMENTS & t.args.keys(), t.name
+
+
+async def test_invalid_arguments_go_back_to_the_model_as_an_error() -> None:
+    model = script(call("get_my_leave_balance", year=1900), "Sorry, that year isn't valid.")
+    graph = build_graph(model, profile_tools(FakeEmployeeService()))
+
+    result = await graph.ainvoke({"messages": [HumanMessage(content="Balance for 1900?")]})
+
+    tool_result = result["messages"][2]
+    assert isinstance(tool_result, ToolMessage)
+    assert tool_result.status == "error"
+    assert "year" in str(tool_result.content)
