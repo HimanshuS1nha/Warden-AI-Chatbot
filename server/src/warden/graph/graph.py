@@ -1,27 +1,39 @@
-from langchain_core.messages import AIMessage
+from collections.abc import Sequence
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 
+from warden.graph.agent import AgentNode
 from warden.graph.state import AgentState
-
-DEMO_REPLY = "Hello from Warden. The agent isn't connected to a model yet."
-
-
-def agent(state: AgentState) -> AgentState:
-    """Placeholder that replies with a fixed message. Replaced by the chat
-    model call once the model is set up."""
-    return {"messages": [AIMessage(content=DEMO_REPLY)]}
 
 
 def build_graph(
+    model: BaseChatModel,
+    tools: Sequence[BaseTool],
     checkpointer: BaseCheckpointSaver[str] | None = None,
 ) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
-    """Compile the graph. With a checkpointer, every run needs a thread ID in
-    its config (`{"configurable": {"thread_id": ...}}`) and continues that
-    thread's saved state."""
+    """The agent loop: the model answers or asks for tools, the tools run, and
+    their results go back to the model, until it answers without a tool call.
+
+        START -> agent -> (tool calls?) -> tools -> agent ... -> END
+
+    Built per request, because the tools are bound to the signed-in user.
+    Compiling is cheap; the model and checkpointer are shared. With a
+    checkpointer, every run needs `{"configurable": {"thread_id": ...}}` and
+    continues that thread's saved state.
+    """
     builder = StateGraph(AgentState)
-    builder.add_node("agent", agent)
+    # The same tools go to both nodes on purpose. The agent node shows them
+    # to the model (names, descriptions, arguments) so it can ask for one;
+    # the model can't run code. The tools node runs what it asked for.
+    builder.add_node("agent", AgentNode(model, tools))
+    builder.add_node("tools", ToolNode(tools))
     builder.add_edge(START, "agent")
-    builder.add_edge("agent", END)
+    # Goes to "tools" when the last message has tool calls, otherwise to END.
+    builder.add_conditional_edges("agent", tools_condition)
+    builder.add_edge("tools", "agent")
     return builder.compile(checkpointer=checkpointer)

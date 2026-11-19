@@ -31,8 +31,12 @@ class Settings(BaseSettings):
     cache_dir: Path = Path(".cache")
 
     # One key per provider, shared by everything that calls it: embeddings
-    # now, the agent's chat model later.
+    # and the agent's chat model.
     gemini_api_key: SecretStr = SecretStr("")
+
+    # The agent's chat model, passed to LangChain's init_chat_model.
+    llm_provider: Literal["google_genai"] = "google_genai"
+    llm_model: str = "gemini-3.8-flash"
 
     embedding_provider: Literal["gemini"] = "gemini"
     embedding_model: str = "gemini-embedding-001"
