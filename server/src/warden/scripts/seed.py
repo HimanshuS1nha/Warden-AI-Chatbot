@@ -223,7 +223,10 @@ class CompanyData:
 
 def uuid7_at(moment: datetime) -> uuid.UUID:
     """A UUIDv7 whose timestamp is `moment`, so ids sort like created_at."""
-    return uuid7(nanoseconds=int(moment.timestamp() * 1_000_000_000))
+    # Whole seconds and microseconds kept apart: multiplying the float
+    # timestamp up to nanoseconds can round down by a millisecond.
+    seconds = int(moment.replace(microsecond=0).timestamp())
+    return uuid7(timestamp=seconds, nanos=moment.microsecond * 1000)
 
 
 def _email_slug(text_: str) -> str:
