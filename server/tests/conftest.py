@@ -22,3 +22,9 @@ if "TEST_DATABASE_URL" not in os.environ:
     ).render_as_string(hide_password=False)
 
 os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+# Same test database, without the asyncpg driver: the checkpointer uses psycopg.
+os.environ["CHECKPOINTER_DATABASE_URL"] = (
+    make_url(os.environ["TEST_DATABASE_URL"])
+    .set(drivername="postgresql")
+    .render_as_string(hide_password=False)
+)

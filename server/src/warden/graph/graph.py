@@ -1,4 +1,5 @@
 from langchain_core.messages import AIMessage
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -13,9 +14,14 @@ def agent(state: AgentState) -> AgentState:
     return {"messages": [AIMessage(content=DEMO_REPLY)]}
 
 
-def build_graph() -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
+def build_graph(
+    checkpointer: BaseCheckpointSaver[str] | None = None,
+) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
+    """Compile the graph. With a checkpointer, every run needs a thread ID in
+    its config (`{"configurable": {"thread_id": ...}}`) and continues that
+    thread's saved state."""
     builder = StateGraph(AgentState)
     builder.add_node("agent", agent)
     builder.add_edge(START, "agent")
     builder.add_edge("agent", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

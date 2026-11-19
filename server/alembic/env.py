@@ -9,6 +9,7 @@ from alembic import context
 from warden import models  # noqa: F401  registers every table on Base.metadata
 from warden.core.config import get_settings
 from warden.core.database import Base
+from warden.graph.checkpointer import alembic_manages
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -52,6 +53,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_name=alembic_manages,
     )
 
     with context.begin_transaction():
@@ -59,7 +61,12 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        # The checkpointer creates and migrates its own tables.
+        include_name=alembic_manages,
+    )
 
     with context.begin_transaction():
         context.run_migrations()

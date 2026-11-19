@@ -9,23 +9,28 @@ from warden.core.database import engine
 from warden.core.exceptions import register_exception_handlers
 from warden.core.logging import configure_logging
 from warden.core.request_context import RequestContextMiddleware
+from warden.graph.checkpointer import open_checkpointer
+from warden.graph.graph import build_graph
 from warden.routers import auth, employees, health, holidays, me, team
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Startup and shutdown. Resources that live as long as the app (the agent's
-    checkpointer, the reranker model) are created here."""
-    yield
-    await engine.dispose()
-
-
 def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the app. `settings` controls logging and CORS; the database engine
-    and JWT code still read `get_settings()` directly."""
+    """Build the app. `settings` controls logging, CORS and the checkpointer;
+    the database engine and JWT code still read `get_settings()` directly."""
     settings = settings or get_settings()
 
     configure_logging(settings.log_level)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Startup and shutdown. Resources that live as long as the app (the
+        agent's checkpointer, later the reranker model) are created here."""
+        try:
+            async with open_checkpointer(settings.checkpointer_database_url) as checkpointer:
+                app.state.graph = build_graph(checkpointer)
+                yield
+        finally:
+            await engine.dispose()
 
     app = FastAPI(title="Warden", lifespan=lifespan)
 
