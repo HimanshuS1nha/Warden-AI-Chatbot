@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolCall
+from langchain_core.messages.tool import tool_call
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
@@ -37,4 +38,6 @@ def script(*replies: str | ToolCall) -> ScriptedChatModel:
 
 
 def call(name: str, call_id: str = "call_1", **args: Any) -> ToolCall:
-    return ToolCall(name=name, args=args, id=call_id)
+    """A tool call as the model would make it. Also works to run a tool
+    directly (`await tool.ainvoke(call(...))`), which returns a ToolMessage."""
+    return tool_call(name=name, args=args, id=call_id)
