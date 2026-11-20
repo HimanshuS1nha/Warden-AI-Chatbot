@@ -16,11 +16,12 @@ from warden.core.dependencies import CurrentUser, CurrentUserDep, DbSession
 from warden.graph.graph import build_graph
 from warden.graph.llm_calls import LLMCallRecorder
 from warden.graph.pending_actions import PendingActions
-from warden.graph.prompts import build_system_prompt, confirmation_note
+from warden.graph.prompts import build_system_prompt, cancellation_note, confirmation_note
 from warden.graph.resources import AgentResources
 from warden.graph.state import AgentState
 from warden.graph.streaming import ChatTurn, sse
 from warden.graph.tools import ToolServices, build_tools
+from warden.models import PendingActionModel
 from warden.schemas.chat import (
     MessagePage,
     MessageResponse,
@@ -158,18 +159,64 @@ async def confirm_action(
     """
     model = _require_model(agent)
     outcome = await PendingActions(db).confirm(user, action_id, LeaveService(db))
-    action = outcome.action
+    note = confirmation_note(outcome.action.summary, outcome.ok, outcome.result)
+    return await _follow_up(
+        model, user, db, chat, agent, session_factory, outcome.action, note, ok=outcome.ok
+    )
+
+
+@router.post(
+    "/actions/{action_id}/cancel",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Server-sent events: action_result first, then the agent's "
+            "reply like a message stream.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
+async def cancel_action(
+    action_id: uuid.UUID,
+    user: CurrentUserDep,
+    db: DbSession,
+    chat: ChatServiceDep,
+    agent: AgentDep,
+    session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
+) -> StreamingResponse:
+    """Drop a change the agent proposed, then stream a short reply from the
+    agent. Errors as for confirm, before anything streams."""
+    model = _require_model(agent)
+    action = await PendingActions(db).cancel(user, action_id)
+    note = cancellation_note(action.summary)
+    return await _follow_up(model, user, db, chat, agent, session_factory, action, note, ok=True)
+
+
+async def _follow_up(
+    model: BaseChatModel,
+    user: CurrentUser,
+    db: AsyncSession,
+    chat: ChatService,
+    agent: AgentResources,
+    session_factory: SessionFactory,
+    action: PendingActionModel,
+    note: str,
+    *,
+    ok: bool,
+) -> StreamingResponse:
+    """`action_result` for the card, then the agent's reply to `note` in the
+    action's thread."""
     thread = await chat.get_thread(user, action.thread_id)
     turn = ChatTurn(
         graph=_build_graph(model, user, db, agent, thread.id),
         chat=chat,
         user=user,
         thread=thread,
-        message=confirmation_note(action.summary, outcome.ok, outcome.result),
+        message=note,
         callbacks=[LLMCallRecorder(session_factory, thread.id)],
         from_user=False,
     )
-    result = {"action_id": str(action.id), "status": action.status.value, "ok": outcome.ok}
+    result = {"action_id": str(action.id), "status": action.status.value, "ok": ok}
 
     async def events() -> AsyncIterator[str]:
         yield sse("action_result", result)

@@ -501,6 +501,44 @@ async def test_a_change_the_rules_now_refuse_fails_and_the_agent_explains(
     assert (denied.outcome, denied.details["reason"]) == ("denied", "overlap")
 
 
+async def test_cancel_drops_the_change_and_streams_a_short_reply(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    model = scripted(apply_for(monday), "Click Confirm.", "OK, I didn't apply for it.")
+    use_agent(model)
+    _, action_id = await propose_leave(client, me, monday)
+
+    response = await client.post(f"/api/chat/actions/{action_id}/cancel")
+
+    assert response.status_code == 200, response.text
+    events = parse(response.text)
+    assert events[0] == (
+        "action_result",
+        {"action_id": action_id, "status": "cancelled", "ok": True},
+    )
+    assert events[-1] == ("done", events[-1][1])
+    assert events[-1][1]["content"] == "OK, I didn't apply for it."
+    assert await db.scalar(select(LeaveRequestModel.id)) is None
+    action = await db.get(PendingActionModel, action_id, populate_existing=True)
+    assert action is not None and action.status == PendingActionStatus.CANCELLED
+    note = str(model.calls[-1].messages[-1].content)
+    assert note == f"[App] The user clicked Cancel on: {action.summary}\nNothing was changed."
+    [cancelled] = await audit_rows(db, "pending_action.cancel")
+    assert (cancelled.outcome, cancelled.target_id) == ("allowed", action.id)
+    assert cancelled.details["action_type"] == "apply_leave"
+
+    for verb in ("confirm", "cancel"):
+        again = await client.post(f"/api/chat/actions/{action_id}/{verb}")
+        assert (again.status_code, again.json()["code"]) == (422, "invalid_status")
+    assert await db.scalar(select(LeaveRequestModel.id)) is None
+
+
 # Unanswered policy questions
 
 

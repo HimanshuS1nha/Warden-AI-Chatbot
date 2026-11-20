@@ -2,9 +2,9 @@
 
 Events, in the order they can arrive:
 
-- `action_result` {action_id, status, ok}: only on a confirm stream, first.
-  The action's new status (`confirmed` or `failed`) for the card; the
-  agent's reply follows.
+- `action_result` {action_id, status, ok}: only on a confirm or cancel
+  stream, first. The action's new status (`confirmed`, `failed` or
+  `cancelled`) for the card; the agent's reply follows.
 - `token` {text}: a piece of the reply as the model writes it. Text written
   before a tool call can arrive too; `done` has the final reply.
 - `tool_start` {id, name, args}: the agent asked for a tool.

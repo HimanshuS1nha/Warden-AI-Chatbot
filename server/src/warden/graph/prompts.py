@@ -79,3 +79,8 @@ def confirmation_note(summary: str, ok: bool, result: dict[str, Any]) -> str:
         f"[App] The user clicked Confirm on: {summary}\n{outcome}\n"
         f"Result: {json.dumps(result, default=str)}"
     )
+
+
+def cancellation_note(summary: str) -> str:
+    """The message the agent resumes from after the user clicks Cancel."""
+    return f"[App] The user clicked Cancel on: {summary}\nNothing was changed."

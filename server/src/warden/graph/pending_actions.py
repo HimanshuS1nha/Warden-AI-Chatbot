@@ -153,17 +153,8 @@ class PendingActions:
         audit row for the leave write. A click that lost the race to another
         records nothing: the first one already did.
         """
-        action = await self.get_for_user(action_id, user)
-        if action.status != PendingActionStatus.PENDING:
-            raise InvalidStatus(f"This action is already {action.status.value}.")
-        if self.is_expired(action):
-            if await self.mark(action.id, user, PendingActionStatus.EXPIRED):
-                self._audit(user, action, AuditOutcome.DENIED, {"reason": ActionExpired.code})
-                await self.db.commit()
-            raise ActionExpired("This action expired. Ask again to get a new one.")
-        if not await self.mark(action.id, user, PendingActionStatus.CONFIRMED):
-            raise InvalidStatus("This action was already handled.")
-
+        audit_action = AuditAction.PENDING_ACTION_CONFIRM
+        action = await self._claim(user, action_id, PendingActionStatus.CONFIRMED, audit_action)
         try:
             # Commits the claim along with the change.
             request = await _run(leave, user, action)
@@ -171,7 +162,7 @@ class PendingActions:
             # The service committed its refusal, and the claim with it.
             action.status = PendingActionStatus.FAILED
             result: dict[str, Any] = {"error": exc.code, "message": exc.message} | exc.details
-            self._audit(user, action, AuditOutcome.DENIED, {"reason": exc.code})
+            self._audit(user, action, audit_action, AuditOutcome.DENIED, {"reason": exc.code})
             await self.db.commit()
             return ConfirmOutcome(action, ok=False, result=to_jsonable_python(result))
 
@@ -180,20 +171,55 @@ class PendingActions:
             "status": request.status.value,
             "days": request.days,
         }
-        self._audit(user, action, AuditOutcome.ALLOWED, {"result": result})
+        self._audit(user, action, audit_action, AuditOutcome.ALLOWED, {"result": result})
         await self.db.commit()
         return ConfirmOutcome(action, ok=True, result=result)
+
+    async def cancel(self, user: CurrentUser, action_id: uuid.UUID) -> PendingActionModel:
+        """Drop `user`'s pending action without running it. Raises like
+        `confirm` when it's not theirs, no longer pending or expired.
+        Audited as `pending_action.cancel`."""
+        audit_action = AuditAction.PENDING_ACTION_CANCEL
+        action = await self._claim(user, action_id, PendingActionStatus.CANCELLED, audit_action)
+        self._audit(user, action, audit_action, AuditOutcome.ALLOWED, {})
+        await self.db.commit()
+        return action
+
+    async def _claim(
+        self,
+        user: CurrentUser,
+        action_id: uuid.UUID,
+        status: PendingActionStatus,
+        audit_action: AuditAction,
+    ) -> PendingActionModel:
+        """Move `user`'s action from pending to `status`, without committing,
+        or raise. An expired action is marked expired (audited as denied and
+        committed) instead. A click that loses the race to another raises
+        InvalidStatus and records nothing: the first click already did."""
+        action = await self.get_for_user(action_id, user)
+        if action.status != PendingActionStatus.PENDING:
+            raise InvalidStatus(f"This action is already {action.status.value}.")
+        if self.is_expired(action):
+            if await self.mark(action.id, user, PendingActionStatus.EXPIRED):
+                details = {"reason": ActionExpired.code}
+                self._audit(user, action, audit_action, AuditOutcome.DENIED, details)
+                await self.db.commit()
+            raise ActionExpired("This action expired. Ask again to get a new one.")
+        if not await self.mark(action.id, user, status):
+            raise InvalidStatus("This action was already handled.")
+        return action
 
     def _audit(
         self,
         user: CurrentUser,
         action: PendingActionModel,
+        audit_action: AuditAction,
         outcome: AuditOutcome,
         details: dict[str, Any],
     ) -> None:
         audit.record(
             self.db,
-            action=AuditAction.PENDING_ACTION_CONFIRM,
+            action=audit_action,
             outcome=outcome,
             actor_id=user.employee_id,
             target_type=AuditTarget.PENDING_ACTION,
