@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 from warden.core.dependencies import CurrentUser
+from warden.graph.tools.common import PROPOSES_WRITE
 from warden.graph.tools.services import ToolServices
 from warden.models import LeaveType, PendingActionModel, PendingActionType
 from warden.services.leave import (
@@ -98,7 +99,7 @@ def build_leave_action_tools(
             action, {"days": quote.request.days, "available_after": quote.available_after}
         )
 
-    return [apply_for_leave, cancel_my_leave_request]
+    return _writes(apply_for_leave, cancel_my_leave_request)
 
 
 def build_team_leave_action_tools(
@@ -175,7 +176,14 @@ def build_team_leave_action_tools(
         )
         return proposal(action, {"employee": quote.employee_name, "days": quote.request.days})
 
-    return [approve_team_leave, reject_team_leave]
+    return _writes(approve_team_leave, reject_team_leave)
+
+
+def _writes(*tools: BaseTool) -> list[BaseTool]:
+    """Mark the tools as proposing writes, for ToolCallGuard."""
+    for t in tools:
+        t.metadata = {PROPOSES_WRITE: True}
+    return list(tools)
 
 
 def leave_summary(quote: LeaveQuote, today: date) -> str:

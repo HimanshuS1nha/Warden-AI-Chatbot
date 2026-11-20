@@ -93,7 +93,7 @@ async def list_messages(
     responses={
         200: {
             "description": "Server-sent events: token, tool_start, tool_end, citations, "
-            "done, error.",
+            "confirmation_required, done, error.",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
         }
     },

@@ -9,6 +9,10 @@ Events, in the order they can arrive:
   or was refused).
 - `citations` {citations}: the policy excerpts the reply cites, after the
   invented ones are dropped. Only sent when there are some.
+- `confirmation_required` {action_id, action_type, summary}: a write tool
+  proposed a change. Show a card with Confirm and Cancel buttons; nothing
+  changes until the user clicks Confirm. Sent once the reply is saved, at
+  most once per turn.
 - `done` {message_id, content}: the reply as saved. Show this rather than
   the joined tokens: invented citation markers are removed from it.
 - `error` {message}: the turn failed. Nothing more follows.
@@ -16,6 +20,7 @@ Events, in the order they can arrive:
 
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -26,6 +31,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from warden.core.dependencies import CurrentUser
+from warden.graph.graph import proposed_action
 from warden.graph.state import AgentState
 from warden.models import ChatThreadModel, UnansweredReason
 from warden.rag.citations import resolve_citations, sources_from_artifacts
@@ -124,7 +130,21 @@ class ChatTurn:
             if citations:
                 yield sse("citations", {"citations": citations})
 
-            saved = await self.chat.add_assistant_message(self.thread, content, citations)
+            # ToolCallGuard lets one write through per turn.
+            proposal = next(filter(None, map(proposed_action, tool_results)), None)
+            action_id = uuid.UUID(proposal["pending_action_id"]) if proposal else None
+            saved = await self.chat.add_assistant_message(
+                self.thread, content, citations, action_id
+            )
+            if proposal:
+                yield sse(
+                    "confirmation_required",
+                    {
+                        "action_id": proposal["pending_action_id"],
+                        "action_type": proposal["action_type"],
+                        "summary": proposal["summary"],
+                    },
+                )
             reason = unanswered_reason(searches, citations)
             if reason is not None:
                 await self.chat.record_unanswered(self.user, self.message, reason)

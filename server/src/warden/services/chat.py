@@ -98,9 +98,15 @@ class ChatService:
         return await self._add(thread, MessageRole.USER, content)
 
     async def add_assistant_message(
-        self, thread: ChatThreadModel, content: str, citations: list[dict[str, Any]]
+        self,
+        thread: ChatThreadModel,
+        content: str,
+        citations: list[dict[str, Any]],
+        pending_action_id: uuid.UUID | None = None,
     ) -> ChatMessageModel:
-        return await self._add(thread, MessageRole.ASSISTANT, content, citations)
+        """`pending_action_id` is the write the reply proposed, if any, so the
+        confirmation card comes back when the thread is reopened."""
+        return await self._add(thread, MessageRole.ASSISTANT, content, citations, pending_action_id)
 
     async def _add(
         self,
@@ -108,9 +114,14 @@ class ChatService:
         role: MessageRole,
         content: str,
         citations: list[dict[str, Any]] | None = None,
+        pending_action_id: uuid.UUID | None = None,
     ) -> ChatMessageModel:
         message = ChatMessageModel(
-            thread_id=thread.id, role=role, content=content, citations=citations or []
+            thread_id=thread.id,
+            role=role,
+            content=content,
+            citations=citations or [],
+            pending_action_id=pending_action_id,
         )
         self.db.add(message)
         await self.db.commit()

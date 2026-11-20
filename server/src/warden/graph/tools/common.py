@@ -10,6 +10,10 @@ from warden.scripts import company as co
 # Tool metadata key: the tool doesn't use the request's database session, so
 # it may run at the same time as other calls in one reply. See ToolCallGuard.
 PARALLEL_SAFE = "parallel_safe"
+# Tool metadata key: the tool proposes a write (a pending action). One
+# proposal per turn, since a reply carries one confirmation card. See
+# ToolCallGuard.
+PROPOSES_WRITE = "proposes_write"
 
 Year = Annotated[
     int | None,

@@ -15,7 +15,7 @@ from langgraph.types import Command
 
 from warden.graph.agent import MAX_TOOL_CALLS, AgentNode, tool_calls_this_turn
 from warden.graph.state import AgentState
-from warden.graph.tools.common import PARALLEL_SAFE
+from warden.graph.tools.common import PARALLEL_SAFE, PROPOSES_WRITE
 from warden.services.errors import ServiceError
 
 
@@ -43,6 +43,13 @@ OVER_LIMIT = (
 )
 
 
+ONE_PROPOSAL = (
+    "Not run: a change is already waiting for the user's confirmation in this "
+    "message, and only one can be proposed at a time. Tell the user to confirm "
+    "or cancel it first, then ask for the next one."
+)
+
+
 ToolExecutor = Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]]
 
 
@@ -60,10 +67,15 @@ class ToolCallGuard:
        at a time. Calls wait for each other unless the tool is marked
        PARALLEL_SAFE in its metadata (it doesn't touch the session), so a new
        tool is safe by default.
+    3. One proposal: once a write tool (PROPOSES_WRITE) has created a pending
+       action, later write calls this turn aren't run. A reply has one
+       confirmation card. A write tool that failed doesn't count, so the
+       model can fix its arguments and try again.
     """
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
+        self.proposed = False
 
     async def __call__(
         self, request: ToolCallRequest, execute: ToolExecutor
@@ -78,10 +90,34 @@ class ToolCallGuard:
                 name=request.tool_call["name"],
                 status="error",
             )
-        if request.tool is not None and (request.tool.metadata or {}).get(PARALLEL_SAFE):
+        metadata = (request.tool.metadata if request.tool else None) or {}
+        if metadata.get(PARALLEL_SAFE):
             return await execute(request)
         async with self.lock:
-            return await execute(request)
+            if not metadata.get(PROPOSES_WRITE):
+                return await execute(request)
+            if self.proposed:
+                return ToolMessage(
+                    content=ONE_PROPOSAL,
+                    tool_call_id=request.tool_call["id"],
+                    name=request.tool_call["name"],
+                    status="error",
+                )
+            result = await execute(request)
+            self.proposed = proposed_action(result) is not None
+            return result
+
+
+def proposed_action(result: ToolMessage | Command[Any]) -> dict[str, Any] | None:
+    """The pending action a write tool's result carries in its artifact:
+    {pending_action_id, action_type, summary}. None for any other result,
+    including a write tool that failed."""
+    if not isinstance(result, ToolMessage) or result.status == "error":
+        return None
+    artifact = result.artifact
+    if isinstance(artifact, dict) and "pending_action_id" in artifact:
+        return artifact
+    return None
 
 
 def build_graph(

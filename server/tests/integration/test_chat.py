@@ -4,6 +4,7 @@ checkpointer instead of Gemini and Postgres checkpoints."""
 
 import json
 from collections.abc import Callable, Iterator
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +21,18 @@ from tests.integration.test_auth import login
 from tests.integration.test_leave_service import add_balance
 from tests.rag_fakes import FakeEmbeddingClient, no_sleep
 from tests.unit.test_policy_tool import CHUNKS
+from warden.graph.graph import ONE_PROPOSAL
 from warden.graph.resources import AgentResources
 from warden.graph.streaming import ERROR_MESSAGE
 from warden.main import app
 from warden.models import (
     ChatMessageModel,
     EmployeeModel,
+    LeaveRequestModel,
     LLMCallModel,
     MessageRole,
+    PendingActionModel,
+    PendingActionStatus,
     UnansweredQueryModel,
     UnansweredReason,
 )
@@ -278,6 +283,109 @@ async def test_a_failed_turn_sends_an_error_and_keeps_the_question(
 
     assert events == [("error", {"message": ERROR_MESSAGE})]
     assert await saved_messages(db) == [(MessageRole.USER, "Hello?")]
+
+
+# Write proposals
+
+
+def next_monday() -> date:
+    """A working day at least a week ahead, so leave on it is never backdated."""
+    day = company_today() + timedelta(days=7)
+    return day + timedelta(days=(7 - day.weekday()) % 7)
+
+
+async def test_a_write_tool_streams_a_confirmation_card_and_changes_nothing(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    use_agent(
+        scripted(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    call(
+                        "apply_for_leave",
+                        leave_type="casual",
+                        start_date=monday.isoformat(),
+                        end_date=monday.isoformat(),
+                    )
+                ],
+            ),
+            "Check the card and click Confirm to apply.",
+        )
+    )
+    await login(client, me)
+    thread_id = await new_thread(client)
+
+    events = await send(client, thread_id, "Apply for casual leave next Monday")
+
+    assert [event for event, _ in events][-2:] == ["confirmation_required", "done"]
+    [card] = named(events, "confirmation_required")
+    action = await db.get(PendingActionModel, card["action_id"])
+    assert action is not None
+    assert card == {
+        "action_id": str(action.id),
+        "action_type": "apply_leave",
+        "summary": action.summary,
+    }
+    assert action.summary.startswith(f"Casual leave, {monday:%a %-d %b}, 1 day.")
+    assert action.status == PendingActionStatus.PENDING
+    assert await db.scalar(select(LeaveRequestModel.id)) is None
+
+    [done] = named(events, "done")
+    history = (await client.get(f"/api/chat/threads/{thread_id}/messages")).json()
+    reply = history["messages"][0]
+    assert (reply["id"], reply["pending_action_id"]) == (done["message_id"], card["action_id"])
+
+
+async def test_only_one_write_is_proposed_per_message(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    tuesday = monday + timedelta(days=1)
+    await add_balance(db, me, allotted=8, year=tuesday.year)
+    model = scripted(
+        AIMessage(
+            content="",
+            tool_calls=[
+                call(
+                    "apply_for_leave",
+                    f"call_{n}",
+                    leave_type="casual",
+                    start_date=day.isoformat(),
+                    end_date=day.isoformat(),
+                )
+                for n, day in enumerate((monday, tuesday), 1)
+            ]
+            + [call("get_my_leave_balance", "call_3")],
+        ),
+        "Confirm Monday first, then ask me again for Tuesday.",
+    )
+    use_agent(model)
+    await login(client, me)
+    thread_id = await new_thread(client)
+
+    events = await send(client, thread_id, "Apply for Monday and Tuesday separately")
+
+    ok = {e["id"]: e["ok"] for e in named(events, "tool_end")}
+    assert ok == {"call_1": True, "call_2": False, "call_3": True}  # Reads still run.
+    refused = next(
+        m for m in model.calls[-1].messages if getattr(m, "tool_call_id", "") == "call_2"
+    )
+    assert refused.content == ONE_PROPOSAL
+    assert len(named(events, "confirmation_required")) == 1
+    actions = (await db.scalars(select(PendingActionModel))).all()
+    assert len(actions) == 1
+    assert monday.strftime("%a %-d %b") in actions[0].summary
 
 
 # Unanswered policy questions
