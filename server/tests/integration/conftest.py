@@ -10,6 +10,7 @@ written for real and tests don't see each other's rows.
 import asyncio
 import itertools
 import os
+import uuid
 from collections.abc import AsyncIterator
 from datetime import date
 from pathlib import Path
@@ -19,6 +20,7 @@ import asyncpg
 import pytest
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -28,7 +30,7 @@ from tests.factories import PASSWORD, MakeEmployee
 from warden.core.database import get_db
 from warden.core.hashing import password_hash
 from warden.main import app
-from warden.models import DepartmentModel, EmployeeModel, Role
+from warden.models import AuditLogModel, DepartmentModel, EmployeeModel, Role
 
 SERVER_DIR = Path(__file__).resolve().parents[2]
 
@@ -149,3 +151,64 @@ def make_employee(db: AsyncSession, hashed_password: str) -> MakeEmployee:
         return employee
 
     return _make
+
+
+# Concurrency
+
+
+@pytest.fixture
+async def committed_team(engine: AsyncEngine, hashed_password: str) -> Any:
+    """A manager and a report committed for real, so two connections can
+    see them, and removed afterwards (audit rows included)."""
+    suffix = uuid.uuid4().hex[:8]
+    async with AsyncSession(engine, expire_on_commit=False) as db:
+        department = DepartmentModel(name=f"Concurrency {suffix}")
+        db.add(department)
+        await db.flush()
+
+        def employee(name: str, role: Role, manager_id: uuid.UUID | None) -> EmployeeModel:
+            return EmployeeModel(
+                employee_code=f"C{suffix}{name[0]}",
+                name=name,
+                email=f"{name.lower()}-{suffix}@warden.test",
+                password_hash=hashed_password,
+                role=role,
+                department_id=department.id,
+                manager_id=manager_id,
+                job_title="Tester",
+                joining_date=date(2024, 1, 1),
+            )
+
+        manager = employee("Manager", Role.MANAGER, None)
+        db.add(manager)
+        await db.flush()
+        report = employee("Report", Role.EMPLOYEE, manager.id)
+        db.add(report)
+        await db.commit()
+
+    yield manager, report
+
+    ids = [manager.id, report.id]
+    async with engine.begin() as conn:
+        # The log is append-only for the app. Test cleanup lifts that briefly,
+        # inside this one transaction.
+        await conn.execute(text("ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only"))
+        await conn.execute(delete(AuditLogModel).where(AuditLogModel.actor_id.in_(ids)))
+        await conn.execute(text("ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only"))
+        await conn.execute(delete(EmployeeModel).where(EmployeeModel.id.in_(ids)))
+        await conn.execute(delete(DepartmentModel).where(DepartmentModel.id == department.id))
+
+
+async def wait_for_lock_waiters(engine: AsyncEngine, count: int) -> None:
+    async with engine.connect() as conn:
+        for _ in range(200):
+            waiting = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE wait_event_type = 'Lock' AND datname = current_database()"
+                )
+            )
+            if waiting == count:
+                return
+            await asyncio.sleep(0.025)
+    raise AssertionError(f"expected {count} connections waiting on a lock")
