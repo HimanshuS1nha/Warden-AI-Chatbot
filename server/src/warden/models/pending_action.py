@@ -19,7 +19,7 @@ class PendingActionModel(UUIDPrimaryKey, Base):
 
     employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("employees.id", ondelete="CASCADE"))
     thread_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("chat_threads.id", ondelete="CASCADE"))
-    # "apply_leave", "cancel_leave", "approve_leave", "reject_leave"
+    # A PendingActionType value.
     action_type: Mapped[str] = mapped_column(String(50))
     params: Mapped[dict[str, Any]] = mapped_column(JSONB)
     # Shown on the confirmation card, e.g. "Casual leave, Mon 17 Nov to Tue

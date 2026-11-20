@@ -19,6 +19,7 @@ from warden.models.enums import (
     LeaveType,
     MessageRole,
     PendingActionStatus,
+    PendingActionType,
     Role,
     UnansweredReason,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "PayslipModel",
     "PendingActionModel",
     "PendingActionStatus",
+    "PendingActionType",
     "Role",
     "UnansweredQueryModel",
     "UnansweredReason",

@@ -58,6 +58,16 @@ class PendingActionStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class PendingActionType(StrEnum):
+    """The write a pending action runs on confirm. Stored as a plain string,
+    so adding a type needs no migration."""
+
+    APPLY_LEAVE = "apply_leave"
+    CANCEL_LEAVE = "cancel_leave"
+    APPROVE_LEAVE = "approve_leave"
+    REJECT_LEAVE = "reject_leave"
+
+
 class AuditOutcome(StrEnum):
     ALLOWED = "allowed"
     DENIED = "denied"
