@@ -11,6 +11,7 @@ from langchain_core.tools import BaseTool
 
 from warden.core.dependencies import CurrentUser
 from warden.graph.tools import ToolServices, build_tools
+from warden.graph.tools.common import PROPOSES_WRITE
 from warden.models import Role
 from warden.rag.retrievers import Retriever
 
@@ -40,6 +41,10 @@ EXPECTED = {
     Role.MANAGER: EVERYONE | MANAGER_ONLY,
     Role.HR: EVERYONE | HR_ONLY,
 }
+
+# Tools that propose a change. Each must be marked, so ToolCallGuard lets one
+# through per turn, and none may run the change itself.
+WRITES = {"apply_for_leave", "cancel_my_leave_request", "approve_team_leave", "reject_team_leave"}
 
 # Argument names that would pick a person or a permission: user_id,
 # employeeId, manager_code, staff_email, role, as_role and so on.
@@ -102,3 +107,14 @@ def test_without_a_retriever_there_is_no_policy_search(role: Role) -> None:
     names = {t.name for t in tools_for(role, retriever=None)}
 
     assert names == EXPECTED[role] - {"search_policies"}
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("role", list(Role))
+def test_only_the_write_tools_propose_and_none_can_confirm(role: Role) -> None:
+    tools = tools_for(role)
+    marked = {t.name for t in tools if (t.metadata or {}).get(PROPOSES_WRITE)}
+
+    assert marked == WRITES & EXPECTED[role]
+    # Confirming is a button the user clicks, never something the model calls.
+    assert not [t.name for t in tools if re.search(r"confirm|execute|commit", t.name)]

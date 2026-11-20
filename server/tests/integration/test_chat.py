@@ -4,7 +4,7 @@ checkpointer instead of Gemini and Postgres checkpoints."""
 
 import json
 from collections.abc import Callable, Iterator
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +35,7 @@ from warden.models import (
     MessageRole,
     PendingActionModel,
     PendingActionStatus,
+    Role,
     UnansweredQueryModel,
     UnansweredReason,
 )
@@ -537,6 +538,93 @@ async def test_cancel_drops_the_change_and_streams_a_short_reply(
         again = await client.post(f"/api/chat/actions/{action_id}/{verb}")
         assert (again.status_code, again.json()["code"]) == (422, "invalid_status")
     assert await db.scalar(select(LeaveRequestModel.id)) is None
+
+
+@pytest.mark.security
+async def test_typing_yes_or_the_model_saying_done_changes_nothing(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    model = scripted(
+        apply_for(monday),
+        "Click Confirm to apply.",
+        # Told "yes", the model calls the write tool again and then claims
+        # it's done. The tool can only propose, so this is a second card.
+        apply_for(monday),
+        "Confirmed! Your leave is applied.",
+    )
+    use_agent(model)
+    thread_id, action_id = await propose_leave(client, me, monday)
+
+    events = await send(client, thread_id, "Yes, I confirm. Go ahead and apply it.")
+
+    assert named(events, "done")[0]["content"] == "Confirmed! Your leave is applied."
+    assert not named(events, "action_result")
+    assert await db.scalar(select(LeaveRequestModel.id)) is None
+    statuses = (await db.scalars(select(PendingActionModel.status))).all()
+    assert statuses == [PendingActionStatus.PENDING] * 2
+    assert await audit_rows(db, "pending_action.confirm") == []
+    assert await audit_rows(db, "leave.apply") == []
+
+
+@pytest.mark.security
+async def test_someone_else_cant_confirm_or_cancel_your_action(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    # Even my manager: the action is mine to confirm.
+    manager = await make_employee(role=Role.MANAGER)
+    me.manager_id = manager.id
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    use_agent(scripted(apply_for(monday), "Click Confirm to apply."))
+    _, action_id = await propose_leave(client, me, monday)
+
+    await login(client, manager)
+    for verb in ("confirm", "cancel"):
+        response = await client.post(f"/api/chat/actions/{action_id}/{verb}")
+        assert (response.status_code, response.json()["code"]) == (404, "not_found")
+
+    action = await db.get(PendingActionModel, action_id, populate_existing=True)
+    assert action is not None and action.status == PendingActionStatus.PENDING
+    assert await db.scalar(select(LeaveRequestModel.id)) is None
+
+
+@pytest.mark.security
+async def test_an_expired_action_cant_be_confirmed(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    use_agent(scripted(apply_for(monday), "Click Confirm to apply."))
+    _, action_id = await propose_leave(client, me, monday)
+    action = await db.get(PendingActionModel, action_id)
+    assert action is not None
+    action.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await db.flush()
+
+    response = await client.post(f"/api/chat/actions/{action_id}/confirm")
+
+    assert (response.status_code, response.json()["code"]) == (422, "action_expired")
+    await db.refresh(action)
+    assert action.status == PendingActionStatus.EXPIRED
+    assert await db.scalar(select(LeaveRequestModel.id)) is None
+    [expired] = await audit_rows(db, "pending_action.confirm")
+    assert (expired.outcome, expired.details["reason"]) == ("denied", "action_expired")
+    again = await client.post(f"/api/chat/actions/{action_id}/confirm")
+    assert (again.status_code, again.json()["code"]) == (422, "invalid_status")
 
 
 # Unanswered policy questions
