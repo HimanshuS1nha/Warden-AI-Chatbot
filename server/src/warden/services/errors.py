@@ -57,3 +57,9 @@ class InvalidStatus(RuleViolation):
     that was already rejected, or cancelling leave that has started."""
 
     code = "invalid_status"
+
+
+class ActionExpired(RuleViolation):
+    """A proposed change wasn't confirmed in time and can't run any more."""
+
+    code = "action_expired"

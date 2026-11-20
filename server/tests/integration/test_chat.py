@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from tests.agent_fakes import ScriptedChatModel, call
 from tests.factories import MakeEmployee
 from tests.integration.test_auth import login
-from tests.integration.test_leave_service import add_balance
+from tests.integration.test_leave_service import add_balance, add_request
 from tests.rag_fakes import FakeEmbeddingClient, no_sleep
 from tests.unit.test_policy_tool import CHUNKS
 from warden.graph.graph import ONE_PROPOSAL
@@ -26,9 +26,11 @@ from warden.graph.resources import AgentResources
 from warden.graph.streaming import ERROR_MESSAGE
 from warden.main import app
 from warden.models import (
+    AuditLogModel,
     ChatMessageModel,
     EmployeeModel,
     LeaveRequestModel,
+    LeaveStatus,
     LLMCallModel,
     MessageRole,
     PendingActionModel,
@@ -386,6 +388,117 @@ async def test_only_one_write_is_proposed_per_message(
     actions = (await db.scalars(select(PendingActionModel))).all()
     assert len(actions) == 1
     assert monday.strftime("%a %-d %b") in actions[0].summary
+
+
+# Confirming
+
+
+def apply_for(day: date) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            call(
+                "apply_for_leave",
+                leave_type="casual",
+                start_date=day.isoformat(),
+                end_date=day.isoformat(),
+            )
+        ],
+    )
+
+
+async def propose_leave(client: AsyncClient, me: EmployeeModel, day: date) -> tuple[str, str]:
+    """Run a turn whose write tool proposes leave on `day`. Returns the thread
+    and the pending action's ID."""
+    await login(client, me)
+    thread_id = await new_thread(client)
+    events = await send(client, thread_id, f"Apply for casual leave on {day}")
+    [card] = named(events, "confirmation_required")
+    return thread_id, card["action_id"]
+
+
+async def confirm(client: AsyncClient, action_id: str) -> list[Event]:
+    response = await client.post(f"/api/chat/actions/{action_id}/confirm")
+    assert response.status_code == 200, response.text
+    return parse(response.text)
+
+
+async def audit_rows(db: AsyncSession, action: str) -> list[AuditLogModel]:
+    query = select(AuditLogModel).where(AuditLogModel.action == action)
+    return list((await db.scalars(query.order_by(AuditLogModel.id))).all())
+
+
+async def test_confirm_runs_the_change_and_streams_the_agents_follow_up(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    model = scripted(apply_for(monday), "Click Confirm to apply.", "Done: it's with your manager.")
+    use_agent(model)
+    thread_id, action_id = await propose_leave(client, me, monday)
+
+    events = await confirm(client, action_id)
+
+    assert events[0] == (
+        "action_result",
+        {"action_id": action_id, "status": "confirmed", "ok": True},
+    )
+    assert events[-1][0] == "done"
+    request = await db.scalar(select(LeaveRequestModel).execution_options(populate_existing=True))
+    assert request is not None
+    assert (request.employee_id, request.start_date, request.status) == (
+        me.id,
+        monday,
+        LeaveStatus.PENDING,
+    )
+    action = await db.get(PendingActionModel, action_id, populate_existing=True)
+    assert action is not None and action.status == PendingActionStatus.CONFIRMED
+
+    # The agent resumed from the app's note, not from anything the user typed.
+    note = str(model.calls[-1].messages[-1].content)
+    assert note.startswith(f"[App] The user clicked Confirm on: {action.summary}")
+    assert "It was done." in note and str(request.id) in note
+    assert [m for _, m in await saved_messages(db)][-1] == "Done: it's with your manager."
+    [confirmed] = await audit_rows(db, "pending_action.confirm")
+    assert (confirmed.outcome, confirmed.target_id) == ("allowed", action.id)
+    assert confirmed.details["result"]["leave_request_id"] == str(request.id)
+    assert len(await audit_rows(db, "leave.apply")) == 1
+
+    response = await client.post(f"/api/chat/actions/{action_id}/confirm")
+    assert (response.status_code, response.json()["code"]) == (422, "invalid_status")
+
+
+async def test_a_change_the_rules_now_refuse_fails_and_the_agent_explains(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    model = scripted(apply_for(monday), "Click Confirm.", "That day is already taken.")
+    use_agent(model)
+    _, action_id = await propose_leave(client, me, monday)
+    # Between the card and the click, another request takes the day.
+    await add_request(db, me, monday, monday, status=LeaveStatus.APPROVED)
+
+    events = await confirm(client, action_id)
+
+    assert events[0] == ("action_result", {"action_id": action_id, "status": "failed", "ok": False})
+    assert events[-1] == ("done", events[-1][1])
+    statuses = (await db.scalars(select(LeaveRequestModel.status))).all()
+    assert statuses == [LeaveStatus.APPROVED]  # Nothing new.
+    action = await db.get(PendingActionModel, action_id, populate_existing=True)
+    assert action is not None and action.status == PendingActionStatus.FAILED
+    note = str(model.calls[-1].messages[-1].content)
+    assert "It was NOT done" in note and '"error": "overlap"' in note
+    [denied] = await audit_rows(db, "pending_action.confirm")
+    assert (denied.outcome, denied.details["reason"]) == ("denied", "overlap")
 
 
 # Unanswered policy questions

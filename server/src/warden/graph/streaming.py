@@ -2,6 +2,9 @@
 
 Events, in the order they can arrive:
 
+- `action_result` {action_id, status, ok}: only on a confirm stream, first.
+  The action's new status (`confirmed` or `failed`) for the card; the
+  agent's reply follows.
 - `token` {text}: a piece of the reply as the model writes it. Text written
   before a tool call can arrive too; `done` has the final reply.
 - `tool_start` {id, name, args}: the agent asked for a tool.
@@ -78,6 +81,9 @@ class ChatTurn:
     thread: ChatThreadModel
     message: str
     callbacks: list[BaseCallbackHandler]
+    # False when `message` comes from the app (a confirmation result), not
+    # the user: it isn't a question that can go unanswered.
+    from_user: bool = True
 
     async def events(self) -> AsyncIterator[str]:
         reply: AIMessage | None = None
@@ -145,7 +151,7 @@ class ChatTurn:
                         "summary": proposal["summary"],
                     },
                 )
-            reason = unanswered_reason(searches, citations)
+            reason = unanswered_reason(searches, citations) if self.from_user else None
             if reason is not None:
                 await self.chat.record_unanswered(self.user, self.message, reason)
         except Exception:

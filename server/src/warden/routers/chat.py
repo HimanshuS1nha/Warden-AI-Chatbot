@@ -2,20 +2,24 @@
 the caller's own threads: someone else's thread is a 404."""
 
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from langchain_core.language_models import BaseChatModel
+from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from warden.core.database import SessionLocal
-from warden.core.dependencies import CurrentUserDep, DbSession
+from warden.core.dependencies import CurrentUser, CurrentUserDep, DbSession
 from warden.graph.graph import build_graph
 from warden.graph.llm_calls import LLMCallRecorder
-from warden.graph.prompts import build_system_prompt
+from warden.graph.pending_actions import PendingActions
+from warden.graph.prompts import build_system_prompt, confirmation_note
 from warden.graph.resources import AgentResources
-from warden.graph.streaming import ChatTurn
+from warden.graph.state import AgentState
+from warden.graph.streaming import ChatTurn, sse
 from warden.graph.tools import ToolServices, build_tools
 from warden.schemas.chat import (
     MessagePage,
@@ -25,7 +29,7 @@ from warden.schemas.chat import (
     ThreadResponse,
 )
 from warden.services.chat import MAX_PAGE_SIZE, ChatService
-from warden.services.leave import company_today
+from warden.services.leave import LeaveService, company_today
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -111,31 +115,99 @@ async def send_message(
     `warden.graph.streaming`). An unknown thread is a 404 and an empty or
     over-long message a 422, both before anything streams."""
     thread = await chat.get_thread(user, thread_id)
-    if agent.chat_model is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Chat is unavailable: no language model is configured.",
-        )
+    model = _require_model(agent)
     await chat.add_user_message(thread, body.message)
 
-    # Built per request: the tools and the prompt are for this user, and the
-    # tools use this request's session.
-    graph = build_graph(
-        agent.chat_model,
-        build_tools(user, ToolServices.for_session(db), agent.retriever, thread.id),
-        build_system_prompt(user, company_today()),
-        agent.checkpointer,
-    )
     turn = ChatTurn(
-        graph=graph,
+        graph=_build_graph(model, user, db, agent, thread.id),
         chat=chat,
         user=user,
         thread=thread,
         message=body.message,
         callbacks=[LLMCallRecorder(session_factory, thread.id)],
     )
+    return _event_stream(turn.events())
+
+
+@router.post(
+    "/actions/{action_id}/confirm",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Server-sent events: action_result first, then the agent's "
+            "reply like a message stream.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
+async def confirm_action(
+    action_id: uuid.UUID,
+    user: CurrentUserDep,
+    db: DbSession,
+    chat: ChatServiceDep,
+    agent: AgentDep,
+    session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
+) -> StreamingResponse:
+    """Run a change the agent proposed, then stream the agent's follow-up.
+
+    Someone else's action, or an unknown one, is a 404. One that's already
+    confirmed, cancelled, failed or expired is a 422 (`invalid_status`,
+    `action_expired`). These come before anything streams. If the rules
+    refuse the change when it runs (the balance changed since the card was
+    shown), the stream says `failed` and the agent explains why.
+    """
+    model = _require_model(agent)
+    outcome = await PendingActions(db).confirm(user, action_id, LeaveService(db))
+    action = outcome.action
+    thread = await chat.get_thread(user, action.thread_id)
+    turn = ChatTurn(
+        graph=_build_graph(model, user, db, agent, thread.id),
+        chat=chat,
+        user=user,
+        thread=thread,
+        message=confirmation_note(action.summary, outcome.ok, outcome.result),
+        callbacks=[LLMCallRecorder(session_factory, thread.id)],
+        from_user=False,
+    )
+    result = {"action_id": str(action.id), "status": action.status.value, "ok": outcome.ok}
+
+    async def events() -> AsyncIterator[str]:
+        yield sse("action_result", result)
+        async for event in turn.events():
+            yield event
+
+    return _event_stream(events())
+
+
+def _require_model(agent: AgentResources) -> BaseChatModel:
+    if agent.chat_model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat is unavailable: no language model is configured.",
+        )
+    return agent.chat_model
+
+
+def _build_graph(
+    model: BaseChatModel,
+    user: CurrentUser,
+    db: AsyncSession,
+    agent: AgentResources,
+    thread_id: uuid.UUID,
+) -> CompiledStateGraph[AgentState, None, AgentState, AgentState]:
+    """Built per request: the tools and the prompt are for this user, and the
+    tools use this request's session."""
+    return build_graph(
+        model,
+        build_tools(user, ToolServices.for_session(db), agent.retriever, thread_id),
+        build_system_prompt(user, company_today()),
+        agent.checkpointer,
+    )
+
+
+def _event_stream(events: AsyncIterator[str]) -> StreamingResponse:
     return StreamingResponse(
-        turn.events(),
+        events,
         media_type="text/event-stream",
         # Stop proxies from buffering the stream or caching it.
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

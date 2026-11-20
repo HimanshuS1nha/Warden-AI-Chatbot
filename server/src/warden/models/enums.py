@@ -56,6 +56,8 @@ class PendingActionStatus(StrEnum):
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    # Confirmed, but the service refused the write when it ran.
+    FAILED = "failed"
 
 
 class PendingActionType(StrEnum):
