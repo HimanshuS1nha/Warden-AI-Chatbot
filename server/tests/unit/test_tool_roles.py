@@ -24,6 +24,7 @@ EVERYONE = {
     "get_my_payslips",
     "get_company_holidays",
     "apply_for_leave",
+    "cancel_my_leave_request",
 }
 MANAGER_ONLY = {"list_my_team", "get_team_leave_requests", "get_team_attendance"}
 HR_ONLY = {"search_employees", "get_employee_profile", "get_employee_leave_summary"}

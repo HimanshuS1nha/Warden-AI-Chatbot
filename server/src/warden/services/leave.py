@@ -79,6 +79,17 @@ class LeaveQuote:
 
 
 @dataclass(frozen=True)
+class CancelQuote:
+    """What cancelling a request would give back. Shown on the confirmation
+    card."""
+
+    request: LeaveRequestModel
+    # Pending days count against the balance too, so cancelling either a
+    # pending or an approved request frees its days.
+    available_after: int
+
+
+@dataclass(frozen=True)
 class BalanceSummary:
     leave_type: LeaveType
     year: int
@@ -120,6 +131,16 @@ def check_dates(leave_type: LeaveType, start: date, end: date, today: date) -> N
             f"so it can't start before {earliest}.",
             earliest=earliest,
         )
+
+
+def cancel_refusal(request: LeaveRequestModel, today: date) -> InvalidStatus | None:
+    """Why the owner can't cancel this request, or None if they can: only
+    pending requests, and approved ones that haven't started."""
+    if request.status not in (LeaveStatus.PENDING, LeaveStatus.APPROVED):
+        return InvalidStatus(f"This request is already {request.status.value}.")
+    if request.status == LeaveStatus.APPROVED and request.start_date <= today:
+        return InvalidStatus("Approved leave can only be cancelled before it starts.")
+    return None
 
 
 class LeaveService:
@@ -297,6 +318,22 @@ class LeaveService:
 
     # Cancel
 
+    async def validate_cancel(self, user: CurrentUser, request_id: uuid.UUID) -> CancelQuote:
+        """Check that the user may cancel this request, without saving
+        anything. Returns the request and the balance after, or raises
+        NotFound or InvalidStatus. The agent calls this before showing the
+        confirmation card; `cancel` checks again when the user confirms."""
+        request = await self.leave.get_request_for_employee(request_id, user.employee_id)
+        if request is None:
+            raise _not_found()
+        refusal = cancel_refusal(request, self.today())
+        if refusal is not None:
+            raise refusal
+        available = await self._available(
+            user.employee_id, request.start_date.year, request.leave_type
+        )
+        return CancelQuote(request=request, available_after=available + request.days)
+
     async def cancel(self, user: CurrentUser, request_id: uuid.UUID) -> LeaveRequestModel:
         """Cancel one of the user's own requests. Commits."""
         action = AuditAction.LEAVE_CANCEL
@@ -308,22 +345,9 @@ class LeaveService:
 
         details = _request_details(request)
         was_approved = request.status == LeaveStatus.APPROVED
-        if request.status not in (LeaveStatus.PENDING, LeaveStatus.APPROVED):
-            await self._deny(
-                user,
-                action,
-                InvalidStatus(f"This request is already {request.status.value}."),
-                target_id=request.id,
-                details=details,
-            )
-        if was_approved and request.start_date <= self.today():
-            await self._deny(
-                user,
-                action,
-                InvalidStatus("Approved leave can only be cancelled before it starts."),
-                target_id=request.id,
-                details=details,
-            )
+        refusal = cancel_refusal(request, self.today())
+        if refusal is not None:
+            await self._deny(user, action, refusal, target_id=request.id, details=details)
 
         if was_approved:
             balance = await self._locked_balance(request)

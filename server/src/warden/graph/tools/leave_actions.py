@@ -21,7 +21,7 @@ from pydantic import Field
 from warden.core.dependencies import CurrentUser
 from warden.graph.tools.services import ToolServices
 from warden.models import LeaveType, PendingActionModel, PendingActionType
-from warden.services.leave import MAX_REASON_LENGTH, LeaveQuote
+from warden.services.leave import MAX_REASON_LENGTH, CancelQuote, LeaveQuote
 
 AWAITING_CONFIRMATION = (
     "Nothing has changed yet. The user sees a card with this summary and must "
@@ -67,20 +67,53 @@ def build_leave_action_tools(
         )
         return proposal(action, {"days": quote.days, "available_after": quote.available_after})
 
-    return [apply_for_leave]
+    @tool(response_format="content_and_artifact")
+    async def cancel_my_leave_request(
+        request_id: Annotated[
+            uuid.UUID,
+            Field(description="The request's `id` from get_my_leave_history."),
+        ],
+    ) -> tuple[str, dict[str, Any]]:
+        """Propose cancelling one of the signed-in employee's own leave requests:
+        a pending one, or an approved one that hasn't started. Shows the user a
+        card to confirm; the request is cancelled only when they click Confirm.
+        Find the request's `id` with get_my_leave_history first, and ask which
+        one if several could match."""
+        quote = await services.leave.validate_cancel(user, request_id)
+        action = await services.pending_actions.create(
+            user,
+            thread_id,
+            PendingActionType.CANCEL_LEAVE,
+            {"request_id": quote.request.id},
+            cancel_summary(quote, services.today()),
+        )
+        return proposal(
+            action, {"days": quote.request.days, "available_after": quote.available_after}
+        )
+
+    return [apply_for_leave, cancel_my_leave_request]
 
 
 def leave_summary(quote: LeaveQuote, today: date) -> str:
-    """The confirmation card's text, e.g. "Casual leave, Mon 23 Nov to Tue
-    24 Nov, 2 days. Balance after: 6". Dates outside this year show it."""
-    span = _day(quote.start, today)
-    if quote.end != quote.start:
-        span += f" to {_day(quote.end, today)}"
-    days = f"{quote.days} day" + ("" if quote.days == 1 else "s")
-    return (
-        f"{quote.leave_type.value.capitalize()} leave, {span}, {days}. "
-        f"Balance after: {quote.available_after}"
-    )
+    """The card for an application, e.g. "Casual leave, Mon 23 Nov to Tue
+    24 Nov, 2 days. Balance after: 6"."""
+    leave = _leave(quote.leave_type, quote.start, quote.end, quote.days, today)
+    return f"{leave[0].upper()}{leave[1:]}. Balance after: {quote.available_after}"
+
+
+def cancel_summary(quote: CancelQuote, today: date) -> str:
+    """The card for a cancellation, e.g. "Cancel approved casual leave, Mon
+    23 Nov to Tue 24 Nov, 2 days. Balance after: 8"."""
+    r = quote.request
+    leave = _leave(r.leave_type, r.start_date, r.end_date, r.days, today)
+    return f"Cancel {r.status.value} {leave}. Balance after: {quote.available_after}"
+
+
+def _leave(leave_type: LeaveType, start: date, end: date, days: int, today: date) -> str:
+    """E.g. "casual leave, Mon 23 Nov to Tue 24 Nov, 2 days". Dates outside
+    this year show it."""
+    span = _day(start, today) + (f" to {_day(end, today)}" if end != start else "")
+    return f"{leave_type.value} leave, {span}, {days} day" + ("" if days == 1 else "s")
 
 
 def _day(day: date, today: date) -> str:

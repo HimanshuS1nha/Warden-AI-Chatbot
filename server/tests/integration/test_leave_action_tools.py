@@ -18,6 +18,7 @@ from warden.graph.pending_actions import PendingActions
 from warden.graph.tools.leave_actions import (
     AWAITING_CONFIRMATION,
     build_leave_action_tools,
+    cancel_summary,
     leave_summary,
 )
 from warden.graph.tools.services import ToolServices
@@ -32,9 +33,9 @@ from warden.models import (
 )
 from warden.services.attendance import AttendanceService
 from warden.services.employee import EmployeeService
-from warden.services.errors import InsufficientBalance, Overlap
+from warden.services.errors import InsufficientBalance, InvalidStatus, NotFound, Overlap
 from warden.services.holiday import HolidayService
-from warden.services.leave import LeaveQuote, LeaveService
+from warden.services.leave import CancelQuote, LeaveQuote, LeaveService
 from warden.services.payslip import PayslipService
 
 
@@ -151,3 +152,75 @@ def test_leave_summary(start: date, end: date, days: int, expected: str) -> None
     )
 
     assert leave_summary(quote, TODAY) == expected
+
+
+async def test_cancel_proposes_and_leaves_the_request_alone(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    me = await make_employee()
+    await add_balance(db, me, allotted=10, used=2)
+    request = await add_request(
+        db, me, date(2026, 6, 8), date(2026, 6, 9), status=LeaveStatus.APPROVED
+    )
+    tools = await tools_for(db, me)
+
+    message = await call(tools["cancel_my_leave_request"], request_id=str(request.id))
+
+    summary = "Cancel approved casual leave, Mon 8 Jun to Tue 9 Jun, 2 days. Balance after: 10"
+    content = json.loads(str(message.content))
+    assert (content["status"], content["summary"]) == ("awaiting_confirmation", summary)
+    assert (content["days"], content["available_after"]) == (2, 10)
+    action = await db.get(PendingActionModel, uuid.UUID(message.artifact["pending_action_id"]))
+    assert action is not None
+    assert action.action_type == "cancel_leave"
+    assert action.params == {"request_id": str(request.id)}
+    await db.refresh(request)
+    assert request.status == LeaveStatus.APPROVED
+
+
+@pytest.mark.parametrize(
+    ("status", "start"),
+    [
+        (LeaveStatus.APPROVED, TODAY),
+        (LeaveStatus.REJECTED, date(2026, 6, 8)),
+        (LeaveStatus.CANCELLED, date(2026, 6, 8)),
+    ],
+    ids=["approved-starts-today", "rejected", "cancelled"],
+)
+async def test_cancel_refuses_requests_that_cant_be_cancelled(
+    db: AsyncSession, make_employee: MakeEmployee, status: LeaveStatus, start: date
+) -> None:
+    me = await make_employee()
+    request = await add_request(db, me, start, start, status=status)
+    tools = await tools_for(db, me)
+
+    with pytest.raises(InvalidStatus):
+        await call(tools["cancel_my_leave_request"], request_id=str(request.id))
+    assert await count(db, PendingActionModel) == 0
+
+
+async def test_cancel_cant_reach_someone_elses_request(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    manager = await make_employee()
+    report = await make_employee(manager_id=manager.id)
+    request = await add_request(db, report, date(2026, 6, 8), date(2026, 6, 8))
+    tools = await tools_for(db, manager)
+
+    with pytest.raises(NotFound):
+        await call(tools["cancel_my_leave_request"], request_id=str(request.id))
+    assert await count(db, PendingActionModel) == 0
+
+
+def test_cancel_summary() -> None:
+    request = LeaveRequestModel(
+        leave_type=LeaveType.EARNED,
+        start_date=date(2026, 6, 8),
+        end_date=date(2026, 6, 8),
+        days=1,
+        status=LeaveStatus.PENDING,
+    )
+
+    summary = cancel_summary(CancelQuote(request, available_after=12), TODAY)
+
+    assert summary == "Cancel pending earned leave, Mon 8 Jun, 1 day. Balance after: 12"
