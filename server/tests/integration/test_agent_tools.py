@@ -15,6 +15,7 @@ from tests.agent_fakes import PROMPT, ScriptedChatModel, call
 from tests.factories import MakeEmployee, as_user
 from tests.integration.test_leave_service import TODAY, add_balance, add_request
 from warden.graph.graph import build_graph
+from warden.graph.pending_actions import PendingActions
 from warden.graph.tools.hr import SEARCH_LIMIT, build_hr_tools
 from warden.graph.tools.manager import NOT_RECORDED, build_manager_tools
 from warden.graph.tools.self_service import build_self_service_tools
@@ -48,6 +49,7 @@ def tools_for(db: AsyncSession, employee: EmployeeModel) -> dict[str, BaseTool]:
         attendance=AttendanceService(db),
         payslips=PayslipService(db),
         holidays=HolidayService(db, today=lambda: TODAY),
+        pending_actions=PendingActions(db),
         today=lambda: TODAY,
     )
     user = as_user(employee)

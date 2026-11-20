@@ -1,6 +1,5 @@
 """Which tools each role gets, and that none lets the model pick whose data it
-reads. The expected lists are the read tools from plan.md's "Tools" table;
-Phase 6 adds the write tools to them."""
+reads. The expected lists are the tools in plan.md's "Tools" table."""
 
 import re
 import uuid
@@ -24,6 +23,7 @@ EVERYONE = {
     "get_my_attendance",
     "get_my_payslips",
     "get_company_holidays",
+    "apply_for_leave",
 }
 MANAGER_ONLY = {"list_my_team", "get_team_leave_requests", "get_team_attendance"}
 HR_ONLY = {"search_employees", "get_employee_profile", "get_employee_leave_summary"}
@@ -63,7 +63,7 @@ def user(role: Role) -> CurrentUser:
 
 
 def tools_for(role: Role, retriever: Retriever | None = RETRIEVER) -> list[BaseTool]:
-    return build_tools(user(role), SERVICES, retriever)
+    return build_tools(user(role), SERVICES, retriever, uuid.uuid4())
 
 
 @pytest.mark.parametrize("role", list(Role))

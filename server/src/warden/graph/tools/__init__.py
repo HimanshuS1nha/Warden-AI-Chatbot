@@ -10,10 +10,13 @@ doesn't get is one the model never sees. The services still check the role
 on every call, so a wrong list here is refused rather than obeyed.
 """
 
+import uuid
+
 from langchain_core.tools import BaseTool
 
 from warden.core.dependencies import CurrentUser
 from warden.graph.tools.hr import build_hr_tools
+from warden.graph.tools.leave_actions import build_leave_action_tools
 from warden.graph.tools.manager import build_manager_tools
 from warden.graph.tools.policy import build_policy_tools
 from warden.graph.tools.self_service import build_self_service_tools
@@ -25,19 +28,25 @@ __all__ = ["ToolServices", "build_tools"]
 
 
 def build_tools(
-    user: CurrentUser, services: ToolServices, retriever: Retriever | None
+    user: CurrentUser,
+    services: ToolServices,
+    retriever: Retriever | None,
+    thread_id: uuid.UUID,
 ) -> list[BaseTool]:
     """The tools for the user's role (plan.md, "Tools"):
 
-    - everyone: policy search and their own data
+    - everyone: policy search, their own data, and proposing their own leave
+      changes
     - managers: plus their team
     - HR: plus looking up any employee
 
     Without a retriever (no chunk store yet) there is no policy search; the
-    rest works as usual.
+    rest works as usual. Write tools save their proposals under `thread_id`,
+    the turn's thread.
     """
     tools = build_policy_tools(user, retriever) if retriever else []
     tools += build_self_service_tools(user, services)
+    tools += build_leave_action_tools(user, services, thread_id)
     if user.role == Role.MANAGER:
         tools += build_manager_tools(user, services)
     elif user.role == Role.HR:

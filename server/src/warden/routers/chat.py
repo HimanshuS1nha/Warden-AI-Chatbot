@@ -122,7 +122,7 @@ async def send_message(
     # tools use this request's session.
     graph = build_graph(
         agent.chat_model,
-        build_tools(user, ToolServices.for_session(db), agent.retriever),
+        build_tools(user, ToolServices.for_session(db), agent.retriever, thread.id),
         build_system_prompt(user, company_today()),
         agent.checkpointer,
     )

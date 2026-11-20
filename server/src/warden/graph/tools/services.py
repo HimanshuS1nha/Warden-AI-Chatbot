@@ -4,6 +4,7 @@ from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from warden.graph.pending_actions import PendingActions
 from warden.services.attendance import AttendanceService
 from warden.services.employee import EmployeeService
 from warden.services.holiday import HolidayService
@@ -25,6 +26,9 @@ class ToolServices:
     attendance: AttendanceService
     payslips: PayslipService
     holidays: HolidayService
+    # Where write tools save what they propose. Nothing runs until the user
+    # confirms.
+    pending_actions: PendingActions
     # The company's date, for defaults like "this year" and "this month".
     today: Callable[[], date] = company_today
 
@@ -37,4 +41,5 @@ class ToolServices:
             attendance=AttendanceService(db),
             payslips=PayslipService(db),
             holidays=HolidayService(db),
+            pending_actions=PendingActions(db),
         )
