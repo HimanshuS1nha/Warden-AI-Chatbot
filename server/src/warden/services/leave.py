@@ -21,7 +21,7 @@ the same transaction as their audit row.
 
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, NoReturn
 
@@ -91,15 +91,16 @@ class CancelQuote:
 
 @dataclass(frozen=True)
 class DecisionQuote:
-    """What approving a report's request would do. Shown on the manager's
-    confirmation card."""
+    """What approving or rejecting a report's request would do. Shown on the
+    manager's confirmation card."""
 
     request: LeaveRequestModel
     employee_name: str
     # Trimmed, or None if empty.
     comment: str | None
-    # The report's days left of this type once it's approved.
-    available_after: int
+    # The report's days left of this type once it's approved. None for a
+    # rejection, which uses no days.
+    available_after: int | None = None
 
 
 @dataclass(frozen=True)
@@ -392,26 +393,13 @@ class LeaveService:
         InvalidStatus or InsufficientBalance, like `approve`, but audits only
         a wrong role. The agent calls this before showing the confirmation
         card; `approve` checks again when the manager confirms."""
-        await ensure_role(self.db, user, Role.MANAGER, operation=AuditAction.LEAVE_APPROVE.value)
-        comment = _clean_comment(comment)
-        if comment_error := _comment_refusal(comment):
-            raise comment_error
-        request = await self._report_request(user, request_id, lock=False)
-        if request is None:
-            raise _not_found()
-        if status_error := _decision_refusal(request):
-            raise status_error
+        quote = await self._quote_decision(user, request_id, comment, AuditAction.LEAVE_APPROVE)
+        request = quote.request
         balances = await self.leave.get_balances(request.employee_id, request.start_date.year)
         balance = next((b for b in balances if b.leave_type == request.leave_type), None)
         if balance is None or request.days > balance.allotted - balance.used:
             raise _over_balance(request, balance)
-        employee = await self.employees.get(request.employee_id)
-        return DecisionQuote(
-            request=request,
-            employee_name=employee.name if employee else "Unknown",
-            comment=comment,
-            available_after=balance.allotted - balance.used - request.days,
-        )
+        return replace(quote, available_after=balance.allotted - balance.used - request.days)
 
     async def approve(
         self, user: CurrentUser, request_id: uuid.UUID, comment: str | None = None
@@ -444,6 +432,17 @@ class LeaveService:
         await self.db.commit()
         return request
 
+    async def validate_reject(
+        self, user: CurrentUser, request_id: uuid.UUID, comment: str
+    ) -> DecisionQuote:
+        """Check that the manager may reject this request, without saving or
+        locking anything. Raises like `reject`, but audits only a wrong role.
+        The agent calls this before showing the confirmation card; `reject`
+        checks again when the manager confirms."""
+        if not comment or not comment.strip():
+            raise _missing_reason()
+        return await self._quote_decision(user, request_id, comment, AuditAction.LEAVE_REJECT)
+
     async def reject(
         self, user: CurrentUser, request_id: uuid.UUID, comment: str
     ) -> LeaveRequestModel:
@@ -451,12 +450,7 @@ class LeaveService:
         the employee knows why. Commits."""
         action = AuditAction.LEAVE_REJECT
         if not comment or not comment.strip():
-            await self._deny(
-                user,
-                action,
-                InvalidInput("Say why the request is rejected."),
-                target_id=request_id,
-            )
+            await self._deny(user, action, _missing_reason(), target_id=request_id)
         request, cleaned = await self._load_for_decision(user, request_id, comment, action)
 
         self._decide(request, user, LeaveStatus.REJECTED, cleaned)
@@ -498,6 +492,27 @@ class LeaveService:
                 details=_request_details(request),
             )
         return request, comment
+
+    async def _quote_decision(
+        self, user: CurrentUser, request_id: uuid.UUID, comment: str | None, action: AuditAction
+    ) -> DecisionQuote:
+        """The checks approve and reject share, without locking or auditing
+        (ensure_role audits a wrong role itself)."""
+        await ensure_role(self.db, user, Role.MANAGER, operation=action.value)
+        comment = _clean_comment(comment)
+        if comment_error := _comment_refusal(comment):
+            raise comment_error
+        request = await self._report_request(user, request_id, lock=False)
+        if request is None:
+            raise _not_found()
+        if status_error := _decision_refusal(request):
+            raise status_error
+        employee = await self.employees.get(request.employee_id)
+        return DecisionQuote(
+            request=request,
+            employee_name=employee.name if employee else "Unknown",
+            comment=comment,
+        )
 
     async def _report_request(
         self, user: CurrentUser, request_id: uuid.UUID, *, lock: bool
@@ -568,6 +583,10 @@ class LeaveService:
 
 def _not_found() -> NotFound:
     return NotFound("Leave request not found.")
+
+
+def _missing_reason() -> InvalidInput:
+    return InvalidInput("Say why the request is rejected.")
 
 
 def _clean_comment(comment: str | None) -> str | None:

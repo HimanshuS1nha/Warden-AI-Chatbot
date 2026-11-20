@@ -39,6 +39,7 @@ from warden.services.employee import EmployeeService
 from warden.services.errors import (
     Forbidden,
     InsufficientBalance,
+    InvalidInput,
     InvalidStatus,
     NotFound,
     Overlap,
@@ -307,3 +308,55 @@ async def test_approve_refuses_what_approve_would_refuse(
         select(LeaveBalanceModel.used).where(LeaveBalanceModel.employee_id == report.id)
     )
     assert used == 2
+
+
+async def test_reject_proposes_and_leaves_the_request_alone(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    manager = await make_employee(role=Role.MANAGER)
+    report = await make_employee(manager_id=manager.id, name="Asha Rao")
+    request = await add_request(db, report, date(2026, 6, 8), date(2026, 6, 9))
+    tools = await tools_for(db, manager)
+
+    message = await call(
+        tools["reject_team_leave"], request_id=str(request.id), comment=" Release week "
+    )
+
+    summary = "Reject Asha Rao's casual leave, Mon 8 Jun to Tue 9 Jun, 2 days. Reason: Release week"
+    content = json.loads(str(message.content))
+    assert (content["status"], content["summary"]) == ("awaiting_confirmation", summary)
+    assert (content["employee"], content["days"]) == ("Asha Rao", 2)
+    action = await db.get(PendingActionModel, uuid.UUID(message.artifact["pending_action_id"]))
+    assert action is not None
+    assert (action.employee_id, action.action_type) == (manager.id, "reject_leave")
+    assert action.params == {"request_id": str(request.id), "comment": "Release week"}
+    await db.refresh(request)
+    assert request.status == LeaveStatus.PENDING
+
+
+async def test_reject_refuses_what_reject_would_refuse(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    head = await make_employee(role=Role.MANAGER)
+    manager = await make_employee(role=Role.MANAGER, manager_id=head.id)
+    report = await make_employee(manager_id=manager.id)
+    outsider = await make_employee(manager_id=head.id)
+    june_8 = date(2026, 6, 8)
+    pending = await add_request(db, report, june_8, june_8)
+    decided = await add_request(db, report, june_8, june_8, status=LeaveStatus.REJECTED)
+    other_team = await add_request(db, outsider, june_8, june_8)
+    tools = await tools_for(db, manager)
+
+    cases: list[tuple[LeaveRequestModel, str, type[ServiceError]]] = [
+        (pending, "   ", InvalidInput),
+        (decided, "No", InvalidStatus),
+        (other_team, "No", NotFound),
+    ]
+    for request, comment, error in cases:
+        with pytest.raises(error):
+            await call(tools["reject_team_leave"], request_id=str(request.id), comment=comment)
+    with pytest.raises(Forbidden):
+        report_tools = await tools_for(db, report)
+        await call(report_tools["reject_team_leave"], request_id=str(pending.id), comment="No")
+
+    assert await count(db, PendingActionModel) == 0

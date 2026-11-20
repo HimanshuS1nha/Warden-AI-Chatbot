@@ -31,6 +31,7 @@ MANAGER_ONLY = {
     "get_team_leave_requests",
     "get_team_attendance",
     "approve_team_leave",
+    "reject_team_leave",
 }
 HR_ONLY = {"search_employees", "get_employee_profile", "get_employee_leave_summary"}
 

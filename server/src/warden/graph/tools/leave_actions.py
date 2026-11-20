@@ -144,7 +144,38 @@ def build_team_leave_action_tools(
             },
         )
 
-    return [approve_team_leave]
+    @tool(response_format="content_and_artifact")
+    async def reject_team_leave(
+        request_id: Annotated[
+            uuid.UUID,
+            Field(description="The request's `id` from get_team_leave_requests."),
+        ],
+        comment: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=MAX_COMMENT_LENGTH,
+                description="Why it's rejected, shown to the employee. Required: ask the "
+                "manager for it if they haven't said. Never make one up.",
+            ),
+        ],
+    ) -> tuple[str, dict[str, Any]]:
+        """Propose rejecting a pending leave request from one of the signed-in
+        manager's direct reports, with the manager's reason. Shows the manager
+        a card to confirm; the leave is rejected only when they click Confirm.
+        Find the request's `id` with get_team_leave_requests first, and ask
+        which one if several could match."""
+        quote = await services.leave.validate_reject(user, request_id, comment)
+        action = await services.pending_actions.create(
+            user,
+            thread_id,
+            PendingActionType.REJECT_LEAVE,
+            {"request_id": quote.request.id, "comment": quote.comment},
+            reject_summary(quote, services.today()),
+        )
+        return proposal(action, {"employee": quote.employee_name, "days": quote.request.days})
+
+    return [approve_team_leave, reject_team_leave]
 
 
 def leave_summary(quote: LeaveQuote, today: date) -> str:
@@ -171,6 +202,14 @@ def approve_summary(quote: DecisionQuote, today: date) -> str:
         f"Approve {quote.employee_name}'s {leave}. Their balance after: {quote.available_after}"
     )
     return summary + (f". Comment: {quote.comment}" if quote.comment else "")
+
+
+def reject_summary(quote: DecisionQuote, today: date) -> str:
+    """The card for a rejection, e.g. "Reject Asha Rao's casual leave, Mon
+    23 Nov to Tue 24 Nov, 2 days. Reason: Release week"."""
+    r = quote.request
+    leave = _leave(r.leave_type, r.start_date, r.end_date, r.days, today)
+    return f"Reject {quote.employee_name}'s {leave}. Reason: {quote.comment}"
 
 
 def _leave(leave_type: LeaveType, start: date, end: date, days: int, today: date) -> str:
