@@ -1,4 +1,5 @@
-"""Write tools for the signed-in employee's own leave. Every role gets them.
+"""Write tools for leave. Every role gets the ones for their own leave;
+managers also get the ones that decide their reports' requests.
 
 None of them changes anything. Each runs the same rule checks as the write
 it proposes, then saves a pending action and returns its summary; the write
@@ -21,7 +22,13 @@ from pydantic import Field
 from warden.core.dependencies import CurrentUser
 from warden.graph.tools.services import ToolServices
 from warden.models import LeaveType, PendingActionModel, PendingActionType
-from warden.services.leave import MAX_REASON_LENGTH, CancelQuote, LeaveQuote
+from warden.services.leave import (
+    MAX_COMMENT_LENGTH,
+    MAX_REASON_LENGTH,
+    CancelQuote,
+    DecisionQuote,
+    LeaveQuote,
+)
 
 AWAITING_CONFIRMATION = (
     "Nothing has changed yet. The user sees a card with this summary and must "
@@ -94,6 +101,52 @@ def build_leave_action_tools(
     return [apply_for_leave, cancel_my_leave_request]
 
 
+def build_team_leave_action_tools(
+    user: CurrentUser, services: ToolServices, thread_id: uuid.UUID
+) -> list[BaseTool]:
+    """Managers only. The service checks the role and that the request is
+    from one of the manager's direct reports on every call anyway."""
+
+    @tool(response_format="content_and_artifact")
+    async def approve_team_leave(
+        request_id: Annotated[
+            uuid.UUID,
+            Field(description="The request's `id` from get_team_leave_requests."),
+        ],
+        comment: Annotated[
+            str | None,
+            Field(
+                max_length=MAX_COMMENT_LENGTH,
+                description="A note for the employee, if the manager gave one.",
+            ),
+        ] = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Propose approving a pending leave request from one of the signed-in
+        manager's direct reports. It checks the request and the report's
+        balance, and shows the manager a card to confirm; the leave is approved
+        only when they click Confirm. Find the request's `id` with
+        get_team_leave_requests first, and ask which one if several could
+        match."""
+        quote = await services.leave.validate_approve(user, request_id, comment)
+        action = await services.pending_actions.create(
+            user,
+            thread_id,
+            PendingActionType.APPROVE_LEAVE,
+            {"request_id": quote.request.id, "comment": quote.comment},
+            approve_summary(quote, services.today()),
+        )
+        return proposal(
+            action,
+            {
+                "employee": quote.employee_name,
+                "days": quote.request.days,
+                "available_after": quote.available_after,
+            },
+        )
+
+    return [approve_team_leave]
+
+
 def leave_summary(quote: LeaveQuote, today: date) -> str:
     """The card for an application, e.g. "Casual leave, Mon 23 Nov to Tue
     24 Nov, 2 days. Balance after: 6"."""
@@ -107,6 +160,17 @@ def cancel_summary(quote: CancelQuote, today: date) -> str:
     r = quote.request
     leave = _leave(r.leave_type, r.start_date, r.end_date, r.days, today)
     return f"Cancel {r.status.value} {leave}. Balance after: {quote.available_after}"
+
+
+def approve_summary(quote: DecisionQuote, today: date) -> str:
+    """The card for an approval, e.g. "Approve Asha Rao's casual leave, Mon
+    23 Nov to Tue 24 Nov, 2 days. Their balance after: 4. Comment: Enjoy"."""
+    r = quote.request
+    leave = _leave(r.leave_type, r.start_date, r.end_date, r.days, today)
+    summary = (
+        f"Approve {quote.employee_name}'s {leave}. Their balance after: {quote.available_after}"
+    )
+    return summary + (f". Comment: {quote.comment}" if quote.comment else "")
 
 
 def _leave(leave_type: LeaveType, start: date, end: date, days: int, today: date) -> str:

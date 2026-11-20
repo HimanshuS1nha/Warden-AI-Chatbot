@@ -18,6 +18,7 @@ from warden.graph.pending_actions import PendingActions
 from warden.graph.tools.leave_actions import (
     AWAITING_CONFIRMATION,
     build_leave_action_tools,
+    build_team_leave_action_tools,
     cancel_summary,
     leave_summary,
 )
@@ -25,22 +26,33 @@ from warden.graph.tools.services import ToolServices
 from warden.models import (
     ChatThreadModel,
     EmployeeModel,
+    LeaveBalanceModel,
     LeaveRequestModel,
     LeaveStatus,
     LeaveType,
     PendingActionModel,
     PendingActionStatus,
+    Role,
 )
 from warden.services.attendance import AttendanceService
 from warden.services.employee import EmployeeService
-from warden.services.errors import InsufficientBalance, InvalidStatus, NotFound, Overlap
+from warden.services.errors import (
+    Forbidden,
+    InsufficientBalance,
+    InvalidStatus,
+    NotFound,
+    Overlap,
+    ServiceError,
+)
 from warden.services.holiday import HolidayService
 from warden.services.leave import CancelQuote, LeaveQuote, LeaveService
 from warden.services.payslip import PayslipService
 
 
 async def tools_for(db: AsyncSession, employee: EmployeeModel) -> dict[str, BaseTool]:
-    """The write tools for `employee` in a new thread of theirs."""
+    """The write tools for `employee` in a new thread of theirs. The
+    manager's tools are built for every role, so tests can check the service
+    still refuses the wrong role."""
     thread = ChatThreadModel(employee_id=employee.id)
     db.add(thread)
     await db.flush()
@@ -53,7 +65,10 @@ async def tools_for(db: AsyncSession, employee: EmployeeModel) -> dict[str, Base
         pending_actions=PendingActions(db),
         today=lambda: TODAY,
     )
-    tools = build_leave_action_tools(as_user(employee), services, thread.id)
+    user = as_user(employee)
+    tools = build_leave_action_tools(user, services, thread.id) + build_team_leave_action_tools(
+        user, services, thread.id
+    )
     return {t.name: t for t in tools}
 
 
@@ -224,3 +239,71 @@ def test_cancel_summary() -> None:
     summary = cancel_summary(CancelQuote(request, available_after=12), TODAY)
 
     assert summary == "Cancel pending earned leave, Mon 8 Jun, 1 day. Balance after: 12"
+
+
+async def test_approve_proposes_and_leaves_the_request_and_balance_alone(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    manager = await make_employee(role=Role.MANAGER)
+    report = await make_employee(manager_id=manager.id, name="Asha Rao")
+    balance = await add_balance(db, report, allotted=10, used=4)
+    request = await add_request(db, report, date(2026, 6, 8), date(2026, 6, 9))
+    tools = await tools_for(db, manager)
+
+    message = await call(
+        tools["approve_team_leave"], request_id=str(request.id), comment="  Enjoy  "
+    )
+
+    summary = (
+        "Approve Asha Rao's casual leave, Mon 8 Jun to Tue 9 Jun, 2 days. "
+        "Their balance after: 4. Comment: Enjoy"
+    )
+    content = json.loads(str(message.content))
+    assert (content["status"], content["summary"]) == ("awaiting_confirmation", summary)
+    assert (content["employee"], content["days"], content["available_after"]) == (
+        "Asha Rao",
+        2,
+        4,
+    )
+    action = await db.get(PendingActionModel, uuid.UUID(message.artifact["pending_action_id"]))
+    assert action is not None
+    assert (action.employee_id, action.action_type) == (manager.id, "approve_leave")
+    assert action.params == {"request_id": str(request.id), "comment": "Enjoy"}
+    await db.refresh(request)
+    await db.refresh(balance)
+    assert (request.status, balance.used) == (LeaveStatus.PENDING, 4)
+
+
+async def test_approve_refuses_what_approve_would_refuse(
+    db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    head = await make_employee(role=Role.MANAGER)
+    manager = await make_employee(role=Role.MANAGER, manager_id=head.id)
+    report = await make_employee(manager_id=manager.id)
+    outsider = await make_employee(manager_id=head.id)
+    await add_balance(db, report, allotted=3, used=2)
+    june_8 = date(2026, 6, 8)
+    over_balance = await add_request(db, report, june_8, date(2026, 6, 9))
+    decided = await add_request(db, report, june_8, june_8, status=LeaveStatus.APPROVED)
+    other_team = await add_request(db, outsider, june_8, june_8)
+    own = await add_request(db, manager, june_8, june_8)
+    tools = await tools_for(db, manager)
+
+    cases: list[tuple[LeaveRequestModel, type[ServiceError]]] = [
+        (over_balance, InsufficientBalance),
+        (decided, InvalidStatus),
+        (other_team, NotFound),
+        (own, NotFound),
+    ]
+    for request, error in cases:
+        with pytest.raises(error):
+            await call(tools["approve_team_leave"], request_id=str(request.id))
+    with pytest.raises(Forbidden):
+        report_tools = await tools_for(db, report)
+        await call(report_tools["approve_team_leave"], request_id=str(over_balance.id))
+
+    assert await count(db, PendingActionModel) == 0
+    used = await db.scalar(
+        select(LeaveBalanceModel.used).where(LeaveBalanceModel.employee_id == report.id)
+    )
+    assert used == 2

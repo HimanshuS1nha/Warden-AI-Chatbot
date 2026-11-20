@@ -90,6 +90,19 @@ class CancelQuote:
 
 
 @dataclass(frozen=True)
+class DecisionQuote:
+    """What approving a report's request would do. Shown on the manager's
+    confirmation card."""
+
+    request: LeaveRequestModel
+    employee_name: str
+    # Trimmed, or None if empty.
+    comment: str | None
+    # The report's days left of this type once it's approved.
+    available_after: int
+
+
+@dataclass(frozen=True)
 class BalanceSummary:
     leave_type: LeaveType
     year: int
@@ -371,6 +384,35 @@ class LeaveService:
 
     # Approve and reject
 
+    async def validate_approve(
+        self, user: CurrentUser, request_id: uuid.UUID, comment: str | None = None
+    ) -> DecisionQuote:
+        """Check that the manager may approve this request, without saving or
+        locking anything. Raises Forbidden, InvalidInput, NotFound,
+        InvalidStatus or InsufficientBalance, like `approve`, but audits only
+        a wrong role. The agent calls this before showing the confirmation
+        card; `approve` checks again when the manager confirms."""
+        await ensure_role(self.db, user, Role.MANAGER, operation=AuditAction.LEAVE_APPROVE.value)
+        comment = _clean_comment(comment)
+        if comment_error := _comment_refusal(comment):
+            raise comment_error
+        request = await self._report_request(user, request_id, lock=False)
+        if request is None:
+            raise _not_found()
+        if status_error := _decision_refusal(request):
+            raise status_error
+        balances = await self.leave.get_balances(request.employee_id, request.start_date.year)
+        balance = next((b for b in balances if b.leave_type == request.leave_type), None)
+        if balance is None or request.days > balance.allotted - balance.used:
+            raise _over_balance(request, balance)
+        employee = await self.employees.get(request.employee_id)
+        return DecisionQuote(
+            request=request,
+            employee_name=employee.name if employee else "Unknown",
+            comment=comment,
+            available_after=balance.allotted - balance.used - request.days,
+        )
+
     async def approve(
         self, user: CurrentUser, request_id: uuid.UUID, comment: str | None = None
     ) -> LeaveRequestModel:
@@ -382,18 +424,9 @@ class LeaveService:
         # Locked until commit: a second approval drawing on the same balance
         # waits here, then sees this one's `used`.
         balance = await self._locked_balance(request)
-        remaining = balance.allotted - balance.used if balance else 0
-        if balance is None or request.days > remaining:
+        if balance is None or request.days > balance.allotted - balance.used:
             await self._deny(
-                user,
-                action,
-                InsufficientBalance(
-                    f"The request needs {request.days} days but only {remaining} are left.",
-                    requested=request.days,
-                    available=remaining,
-                ),
-                target_id=request.id,
-                details=details,
+                user, action, _over_balance(request, balance), target_id=request.id, details=details
             )
 
         details |= _balance_change(balance, request.days)
@@ -449,32 +482,37 @@ class LeaveService:
         action: AuditAction,
     ) -> tuple[LeaveRequestModel, str | None]:
         await ensure_role(self.db, user, Role.MANAGER, operation=action.value)
-        comment = (comment or "").strip() or None
-        if comment and len(comment) > MAX_COMMENT_LENGTH:
+        comment = _clean_comment(comment)
+        if comment_error := _comment_refusal(comment):
+            await self._deny(user, action, comment_error, target_id=request_id)
+
+        request = await self._report_request(user, request_id, lock=True)
+        if request is None:
+            await self._deny(user, action, _not_found(), target_id=request_id)
+        if status_error := _decision_refusal(request):
             await self._deny(
                 user,
                 action,
-                InvalidInput(f"The comment can be at most {MAX_COMMENT_LENGTH} characters."),
-                target_id=request_id,
+                status_error,
+                target_id=request.id,
+                details=_request_details(request),
             )
+        return request, comment
 
+    async def _report_request(
+        self, user: CurrentUser, request_id: uuid.UUID, *, lock: bool
+    ) -> LeaveRequestModel | None:
+        """A request from one of the manager's direct reports, else None.
+        `lock` holds the request row until commit."""
         request = await self.leave.get_request_for_manager(
-            request_id, user.employee_id, for_update=True
+            request_id, user.employee_id, for_update=lock
         )
         # The scoped query already leaves out the manager's own requests (they
         # aren't their own report). The second check keeps self-approval
         # impossible even if that query changes.
         if request is None or request.employee_id == user.employee_id:
-            await self._deny(user, action, _not_found(), target_id=request_id)
-        if request.status != LeaveStatus.PENDING:
-            await self._deny(
-                user,
-                action,
-                InvalidStatus(f"This request is already {request.status.value}."),
-                target_id=request.id,
-                details=_request_details(request),
-            )
-        return request, comment
+            return None
+        return request
 
     def _decide(
         self,
@@ -530,6 +568,36 @@ class LeaveService:
 
 def _not_found() -> NotFound:
     return NotFound("Leave request not found.")
+
+
+def _clean_comment(comment: str | None) -> str | None:
+    return (comment or "").strip() or None
+
+
+def _comment_refusal(comment: str | None) -> InvalidInput | None:
+    if comment and len(comment) > MAX_COMMENT_LENGTH:
+        return InvalidInput(f"The comment can be at most {MAX_COMMENT_LENGTH} characters.")
+    return None
+
+
+def _decision_refusal(request: LeaveRequestModel) -> InvalidStatus | None:
+    """Managers decide pending requests only."""
+    if request.status != LeaveStatus.PENDING:
+        return InvalidStatus(f"This request is already {request.status.value}.")
+    return None
+
+
+def _over_balance(
+    request: LeaveRequestModel, balance: LeaveBalanceModel | None
+) -> InsufficientBalance:
+    """Approving uses days from `allotted - used`. Pending days aren't
+    subtracted: this request is one of them."""
+    remaining = balance.allotted - balance.used if balance else 0
+    return InsufficientBalance(
+        f"The request needs {request.days} days but only {remaining} are left.",
+        requested=request.days,
+        available=remaining,
+    )
 
 
 def _clamp_limit(limit: int) -> int:

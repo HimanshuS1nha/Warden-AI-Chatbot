@@ -16,7 +16,10 @@ from langchain_core.tools import BaseTool
 
 from warden.core.dependencies import CurrentUser
 from warden.graph.tools.hr import build_hr_tools
-from warden.graph.tools.leave_actions import build_leave_action_tools
+from warden.graph.tools.leave_actions import (
+    build_leave_action_tools,
+    build_team_leave_action_tools,
+)
 from warden.graph.tools.manager import build_manager_tools
 from warden.graph.tools.policy import build_policy_tools
 from warden.graph.tools.self_service import build_self_service_tools
@@ -37,7 +40,7 @@ def build_tools(
 
     - everyone: policy search, their own data, and proposing their own leave
       changes
-    - managers: plus their team
+    - managers: plus their team, and proposing decisions on its leave
     - HR: plus looking up any employee
 
     Without a retriever (no chunk store yet) there is no policy search; the
@@ -49,6 +52,7 @@ def build_tools(
     tools += build_leave_action_tools(user, services, thread_id)
     if user.role == Role.MANAGER:
         tools += build_manager_tools(user, services)
+        tools += build_team_leave_action_tools(user, services, thread_id)
     elif user.role == Role.HR:
         tools += build_hr_tools(user, services)
     return tools
