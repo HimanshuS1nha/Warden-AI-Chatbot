@@ -11,7 +11,12 @@ from warden.models.enums import AuditOutcome, pg_enum
 
 class AuditLogModel(UUIDPrimaryKey, Base):
     __tablename__ = "audit_logs"
-    __table_args__ = (Index("ix_audit_logs_created_at", "created_at"),)
+    __table_args__ = (
+        Index("ix_audit_logs_created_at", "created_at"),
+        # GET /api/admin/audit-logs?action=...: without it, filtering on a rare
+        # action (refresh token reuse, forbidden attempts) scans the whole log.
+        Index("ix_audit_logs_action_created_at", "action", "created_at"),
+    )
 
     # Null when nobody is logged in, e.g. a failed login. SET NULL keeps the
     # log row if the employee is deleted.

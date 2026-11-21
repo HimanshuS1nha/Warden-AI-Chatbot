@@ -1,5 +1,5 @@
-"""HR administration: policy documents. Used through /docs or curl; the web
-client has no admin screens.
+"""HR administration: policy documents, the audit log and unanswered
+questions. Used through /docs or curl; the web client has no admin screens.
 
     curl -b cookies.txt -F file=@leave-policy-v3.pdf -F slug=leave-policy \
       -F "title=Leave Policy" -F access_level=all -F version=3 \
@@ -10,14 +10,30 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    Query,
+    UploadFile,
+    status,
+)
 
 from warden.core.dependencies import CurrentUser, require_role
-from warden.models import AccessLevel, Role
+from warden.models import AccessLevel, AuditAction, AuditOutcome, Role, UnansweredReason
 from warden.rag.indexer import DocumentIndexer
 from warden.routers.chat import AgentDep
-from warden.routers.services import DocumentServiceDep
+from warden.routers.services import AdminServiceDep, DocumentServiceDep
+from warden.schemas.admin import (
+    AuditLogPage,
+    AuditLogResponse,
+    UnansweredQueryPage,
+    UnansweredQueryResponse,
+)
 from warden.schemas.document import DocumentResponse, IndexingStartedResponse
+from warden.services.admin import MAX_PAGE_SIZE, AuditFilters
 from warden.services.errors import Unavailable
 from warden.services.leave import company_today
 from warden.services.uploads import MAX_UPLOAD_BYTES
@@ -27,6 +43,11 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 HRUser = Annotated[CurrentUser, Depends(require_role(Role.HR))]
 
 SLUG_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+
+Before = Annotated[uuid.UUID | None, Query(description="The `next` value from the previous page.")]
+Limit = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)]
+FromDate = Annotated[date | None, Query(description="First day included (company timezone).")]
+ToDate = Annotated[date | None, Query(description="Last day included (company timezone).")]
 
 
 def get_document_indexer(agent: AgentDep) -> DocumentIndexer:
@@ -89,3 +110,54 @@ async def reindex_document(
     document, row = await documents.start_reindex(user, document_id)
     background.add_task(indexer.run, row.id)
     return IndexingStartedResponse.build(document, row)
+
+
+@router.get("/audit-logs")
+async def list_audit_logs(
+    user: HRUser,
+    admin: AdminServiceDep,
+    actor_id: uuid.UUID | None = None,
+    action: AuditAction | None = None,
+    outcome: AuditOutcome | None = None,
+    target_id: uuid.UUID | None = None,
+    from_date: FromDate = None,
+    to_date: ToDate = None,
+    before: Before = None,
+    limit: Limit = 50,
+) -> AuditLogPage:
+    """The audit log, newest first."""
+    filters = AuditFilters(
+        actor_id=actor_id,
+        action=action,
+        outcome=outcome,
+        target_id=target_id,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    page = await admin.list_audit_logs(user, filters, before, limit)
+    return AuditLogPage(entries=[AuditLogResponse.build(e) for e in page.items], next=page.next)
+
+
+@router.get("/unanswered-queries")
+async def list_unanswered_queries(
+    user: HRUser,
+    admin: AdminServiceDep,
+    reason: UnansweredReason | None = None,
+    from_date: FromDate = None,
+    to_date: ToDate = None,
+    before: Before = None,
+    limit: Limit = 50,
+) -> UnansweredQueryPage:
+    """Questions policy search found no relevant document for, newest first:
+    the gaps in the documents. Who asked isn't included."""
+    page = await admin.list_unanswered_queries(
+        user,
+        reason=reason,
+        from_date=from_date,
+        to_date=to_date,
+        before=before,
+        limit=limit,
+    )
+    return UnansweredQueryPage(
+        queries=[UnansweredQueryResponse.model_validate(q) for q in page.items], next=page.next
+    )
