@@ -14,7 +14,11 @@ import { QUERY_KEYS } from "@/constants/query-keys";
 
 import type { ThreadPage } from "@/types/chat";
 
-export function NewChatButton() {
+// Creates a thread and opens it. Takes Button props for styling.
+export function NewChatButton({
+  disabled,
+  ...props
+}: Omit<React.ComponentProps<typeof Button>, "onClick" | "children">) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -45,9 +49,8 @@ export function NewChatButton() {
 
   return (
     <Button
-      variant="outline"
-      className="w-full justify-start"
-      disabled={createThreadMutation.isPending}
+      {...props}
+      disabled={disabled || createThreadMutation.isPending}
       onClick={() => createThreadMutation.mutate()}
     >
       {createThreadMutation.isPending ? <Loader2Icon className="animate-spin" /> : <PlusIcon />}

@@ -15,7 +15,7 @@ export function AppSidebar() {
           </span>
           Warden
         </div>
-        <NewChatButton />
+        <NewChatButton variant="outline" className="w-full justify-start" />
       </SidebarHeader>
 
       <SidebarContent>
