@@ -1,6 +1,7 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
 
 import { AppSidebar } from "@/components/app-sidebar";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
 import { meQueryOptions } from "@/api/auth";
@@ -23,8 +24,9 @@ function RootLayout() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset className="h-svh overflow-hidden">
-        <header className="flex h-12 shrink-0 items-center border-b px-2">
+        <header className="flex h-12 shrink-0 items-center justify-between border-b px-2">
           <SidebarTrigger />
+          <ThemeToggle />
         </header>
         <Outlet />
       </SidebarInset>

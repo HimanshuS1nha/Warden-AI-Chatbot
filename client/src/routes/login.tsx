@@ -21,6 +21,7 @@ import {
   FieldLabel,
   FieldSeparator,
 } from "@/components/ui/field";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Input } from "@/components/ui/input";
 
 import { getErrorMessage } from "@/lib/api-error";
@@ -73,7 +74,10 @@ function LoginPage() {
   };
 
   return (
-    <main className="flex min-h-svh items-center justify-center bg-muted/40 px-4 py-10">
+    <main className="relative flex min-h-svh items-center justify-center bg-muted/40 px-4 py-10">
+      <div className="absolute top-3 right-3">
+        <ThemeToggle />
+      </div>
       <div className="flex w-full max-w-sm flex-col gap-6">
         <div className="flex items-center justify-center gap-2 text-lg font-semibold">
           <span className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
