@@ -191,3 +191,7 @@ docker-compose.dev.yml   backing services for development
 - **LLM:** Gemini through LangChain's `init_chat_model`, so the provider is a setting.
 - **Frontend:** React 19, TanStack Router and Query, Tailwind CSS 4, Base UI, react-markdown.
 - **Tooling:** uv, ruff, mypy (strict), pytest with real Postgres and Redis, pnpm, Vite.
+
+## 🚀 About Me
+
+My name is Himanshu Sinha and I'm a full stack developer.
