@@ -9,12 +9,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Where the app runs. Behavior meant only for production checks for "prod".
+    env: Literal["dev", "prod"] = "dev"
+
     # SQLAlchemy URL with the asyncpg driver, for the app's models.
     database_url: str
     # Plain libpq URL (postgresql://...) for the agent's checkpointer, which
     # uses psycopg. Usually the same database as database_url.
     checkpointer_database_url: str
     frontend_url: str = "http://localhost:5173"
+    # Rate limits.
+    redis_url: str = "redis://localhost:6379/0"
+    # Vector store for policy chunks. 6333 is Qdrant's HTTP port.
+    qdrant_url: str = "http://localhost:6333"
 
     jwt_secret_key: str = Field(min_length=32)
     jwt_algorithm: str = "HS256"

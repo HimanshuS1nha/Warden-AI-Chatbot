@@ -1,0 +1,63 @@
+# Backing services for local development. The server and client run on the
+# host (uv run fastapi dev, pnpm dev) and reach these on localhost.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Host ports default to each service's standard port. If something on your
+# machine already uses one (a native Postgres on 5432, say), override it:
+#   POSTGRES_PORT=5433 docker compose -f docker-compose.dev.yml up -d
+# and change the port in server/.env to match.
+
+name: warden-dev
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: warden
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "warden"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.20.2
+    ports:
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333" # HTTP
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334" # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      # The image has no curl or wget, so ask /readyz over bash's /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.0\r\n\r\n" >&3 && grep -q "200 OK" <&3'
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  redis-data:
