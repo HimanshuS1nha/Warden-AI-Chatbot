@@ -71,12 +71,21 @@ class Settings(BaseSettings):
     #   dense         - Qdrant, dense vectors only
     #   hybrid        - Qdrant, dense and BM25 fused with RRF
     #   hybrid_rerank - hybrid candidates reordered by a cross-encoder
-    retriever: Literal["memory", "dense", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
+    #
+    # Dense is the default because it measured best on this corpus
+    # (eval/results/summary.md): Gemini embeddings already find the answer,
+    # BM25 and the small cross-encoder only reorder it worse, and the rerank
+    # threshold turned away real questions phrased casually.
+    retriever: Literal["memory", "dense", "hybrid", "hybrid_rerank"] = "dense"
     # For memory and dense: policy search finds nothing when its best match
     # scores below this (cosine similarity with the embedding model above).
-    # Measured on the demo documents: relevant questions score 0.70+,
-    # off-topic ones ("how to bake bread") 0.51-0.59. Change it with the
-    # embedding model. Hybrid search has no threshold: RRF scores only rank.
+    # Measured by eval/retrieval.py: real questions score 0.62 and up (casual
+    # phrasings are the lowest), clearly off-topic ones ("how to bake bread")
+    # about 0.50-0.55, but near-topic ones ("dress code", "stock options")
+    # 0.64-0.70. So this only catches the clearly off-topic; the model
+    # handles the rest by finding nothing relevant in what comes back.
+    # Change it with the embedding model. Hybrid search has no threshold:
+    # RRF scores only rank.
     policy_min_score: float = Field(default=0.6, ge=0, le=1)
 
     # A fastembed cross-encoder, for hybrid_rerank.
