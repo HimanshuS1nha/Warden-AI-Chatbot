@@ -12,6 +12,9 @@ import os
 from sqlalchemy.engine import make_url
 
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-characters"
+# Off for the app most tests share, which logs in far more than 5 times a
+# minute. tests/integration/test_rate_limit.py turns it on with its own Redis.
+os.environ["RATE_LIMIT_ENABLED"] = "false"
 
 if "TEST_DATABASE_URL" not in os.environ:
     from warden.core.config import Settings

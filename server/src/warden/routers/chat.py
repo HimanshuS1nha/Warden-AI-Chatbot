@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from warden.core.database import SessionLocal
 from warden.core.dependencies import CurrentUser, CurrentUserDep, DbSession
+from warden.core.rate_limit import RateLimiterDep, Rule, too_many_requests
 from warden.graph.graph import build_graph
 from warden.graph.llm_calls import LLMCallRecorder
 from warden.graph.pending_actions import PendingActions, utc_now, visible_status
@@ -56,6 +57,16 @@ def get_session_factory() -> SessionFactory:
     """For writes that must not share the request's session (LLM call
     stats). Tests override it to stay in their transaction."""
     return SessionLocal
+
+
+async def limit_chat(user: CurrentUserDep, limiter: RateLimiterDep) -> None:
+    """The per-user limit on turns that run the model. Checked after login
+    and before anything else, so a refused turn costs one Redis call."""
+    if limiter is None:
+        return
+    decision = await limiter.hit(Rule("chat:user", str(user.employee_id), limiter.limits.chat))
+    if not decision.allowed:
+        raise too_many_requests(decision, "You're sending messages too quickly")
 
 
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
@@ -169,8 +180,10 @@ async def clear_rating(message_id: uuid.UUID, user: CurrentUserDep, chat: ChatSe
             "description": "Server-sent events: token, tool_start, tool_end, citations, "
             "confirmation_required, done, error.",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
-        }
+        },
+        429: {"description": "Too many chat turns from this user."},
     },
+    dependencies=[Depends(limit_chat)],
 )
 async def send_message(
     thread_id: uuid.UUID,
@@ -208,8 +221,10 @@ async def send_message(
             "description": "Server-sent events: action_result first, then the agent's "
             "reply like a message stream.",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
-        }
+        },
+        429: {"description": "Too many chat turns from this user."},
     },
+    dependencies=[Depends(limit_chat)],
 )
 async def confirm_action(
     action_id: uuid.UUID,
@@ -243,8 +258,10 @@ async def confirm_action(
             "description": "Server-sent events: action_result first, then the agent's "
             "reply like a message stream.",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
-        }
+        },
+        429: {"description": "Too many chat turns from this user."},
     },
+    dependencies=[Depends(limit_chat)],
 )
 async def cancel_action(
     action_id: uuid.UUID,

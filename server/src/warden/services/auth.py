@@ -19,6 +19,7 @@ from warden.core.jwt import (
     create_refresh_token,
     decode_token,
 )
+from warden.core.rate_limit import RateLimiter, Rule, hashed, too_many_requests
 from warden.core.request_context import get_request_context
 from warden.models import (
     AuditAction,
@@ -49,8 +50,49 @@ def invalid_refresh_token_error() -> HTTPException:
     )
 
 
+async def check_login_rate_limit(db: AsyncSession, limiter: RateLimiter | None, email: str) -> None:
+    """Raise a 429 when this IP or this email has used up its login attempts.
+
+    Checked before the password, so a correct password doesn't get through
+    either. The refusal is audited once per lockout, not once per refused
+    attempt: the row says who was locked out and from where, and an attacker
+    retrying in a loop can't use it to flood the log.
+    """
+    if limiter is None:
+        return
+    email = normalize_email(email)
+    ip = get_request_context().ip
+    limit = limiter.limits.login
+    rules = [Rule("login:email", hashed(email), limit)]
+    if ip is not None:
+        rules.append(Rule("login:ip", ip, limit))
+
+    decision = await limiter.hit(*rules)
+    if decision.allowed:
+        return
+    if decision.new_lockout:
+        audit.record(
+            db,
+            action=AuditAction.AUTH_LOGIN,
+            outcome=AuditOutcome.DENIED,
+            details={
+                "email": email,
+                "reason": "rate_limited",
+                # login:ip, login:email or both.
+                "limits": list(decision.exceeded),
+                "retry_after": decision.retry_after,
+            },
+        )
+        await db.commit()
+    raise too_many_requests(decision, "Too many login attempts")
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
 async def login_user(db: AsyncSession, data: LoginRequest) -> LoginResult:
-    email = data.email.strip().lower()
+    email = normalize_email(data.email)
     employee = await db.scalar(select(EmployeeModel).where(EmployeeModel.email == email))
 
     if employee is None:

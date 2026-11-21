@@ -9,17 +9,29 @@ from warden.core.cookies import (
     REFRESH_TOKEN_COOKIE_PATH,
 )
 from warden.core.dependencies import CurrentUserDep, DbSession
+from warden.core.rate_limit import RateLimiterDep
 from warden.models import EmployeeModel
 from warden.schemas.auth import LoginRequest, LoginResult
 from warden.schemas.employee import EmployeeResponse
-from warden.services.auth import login_user, logout_user, refresh_session
+from warden.services.auth import (
+    check_login_rate_limit,
+    login_user,
+    logout_user,
+    refresh_session,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-@router.post("/login")
-async def login(data: LoginRequest, response: Response, db: DbSession) -> EmployeeResponse:
+@router.post(
+    "/login",
+    responses={429: {"description": "Too many attempts from this IP or for this email."}},
+)
+async def login(
+    data: LoginRequest, response: Response, db: DbSession, limiter: RateLimiterDep
+) -> EmployeeResponse:
     # The client IP and user agent come from the request context.
+    await check_login_rate_limit(db, limiter, data.email)
     result = await login_user(db, data)
     _set_auth_cookies(response, result)
     return result.employee

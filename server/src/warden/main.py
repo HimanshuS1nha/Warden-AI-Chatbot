@@ -8,6 +8,7 @@ from warden.core.config import Settings, get_settings
 from warden.core.database import engine
 from warden.core.exceptions import register_exception_handlers
 from warden.core.logging import configure_logging
+from warden.core.rate_limit import RateLimitMiddleware, build_rate_limiter
 from warden.core.request_context import RequestContextMiddleware
 from warden.graph.resources import open_agent_resources
 from warden.routers import admin, auth, chat, employees, health, holidays, me, team
@@ -20,6 +21,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     configure_logging(settings.log_level)
+    rate_limiter = build_rate_limiter(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -32,13 +34,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.agent = agent
                 yield
         finally:
+            if rate_limiter is not None:
+                await rate_limiter.aclose()
             await engine.dispose()
 
     app = FastAPI(title="Warden", lifespan=lifespan)
 
+    # None when rate limits are off. Read from here by the middleware and
+    # by `get_rate_limiter`, so tests can swap it.
+    app.state.rate_limiter = rate_limiter
+
     register_exception_handlers(app)
 
-    # Added first, so it runs inside CORS: preflight requests never reach it.
+    # Middleware added first runs innermost. Rate limiting runs inside the
+    # request context (it needs the client IP, and its 429 gets a request
+    # ID), which runs inside CORS: preflight requests reach neither, and the
+    # browser can read a 429.
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(
         CORSMiddleware,

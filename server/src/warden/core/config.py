@@ -18,8 +18,16 @@ class Settings(BaseSettings):
     # uses psycopg. Usually the same database as database_url.
     checkpointer_database_url: str
     frontend_url: str = "http://localhost:5173"
-    # Rate limits.
+    # Rate limits, counted in Redis (warden.core.rate_limit). All per minute.
     redis_url: str = "redis://localhost:6379/0"
+    rate_limit_enabled: bool = True
+    # Login attempts, per client IP and, separately, per email.
+    login_rate_limit: int = Field(default=5, gt=0)
+    # Chat turns per user: messages, plus confirming or cancelling an action,
+    # since each of those runs the model too.
+    chat_rate_limit: int = Field(default=20, gt=0)
+    # All requests per client IP.
+    request_rate_limit: int = Field(default=120, gt=0)
     # Vector store for policy chunks. 6333 is Qdrant's HTTP port.
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "policy_chunks"
