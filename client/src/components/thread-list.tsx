@@ -1,0 +1,93 @@
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { MessageSquareIcon, RotateCwIcon } from "lucide-react";
+import { useEffect, useRef } from "react";
+
+import { Button } from "@/components/ui/button";
+import {
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarMenuSkeleton,
+} from "@/components/ui/sidebar";
+
+import { getErrorMessage } from "@/lib/api-error";
+
+import { threadsInfiniteQueryOptions } from "@/api/chat";
+
+export function ThreadList() {
+  const {
+    data,
+    error,
+    isPending,
+    isError,
+    refetch,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = useInfiniteQuery(threadsInfiniteQueryOptions);
+
+  // Load the next page when the end of the list scrolls into view.
+  const sentinelRef = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasNextPage || isFetchingNextPage) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) void fetchNextPage();
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  const threads = data?.pages.flatMap((page) => page.threads) ?? [];
+
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Conversations</SidebarGroupLabel>
+      <SidebarGroupContent>
+        {isPending ? (
+          <ThreadSkeletons count={6} />
+        ) : isError ? (
+          <div className="flex flex-col items-start gap-2 px-2 py-1 text-sm text-muted-foreground">
+            <p>Couldn't load conversations. {getErrorMessage(error)}</p>
+            <Button variant="outline" size="sm" onClick={() => void refetch()}>
+              <RotateCwIcon />
+              Retry
+            </Button>
+          </div>
+        ) : threads.length === 0 ? (
+          <p className="px-2 py-1 text-sm text-muted-foreground">No conversations yet.</p>
+        ) : (
+          <SidebarMenu>
+            {threads.map((thread) => (
+              <SidebarMenuItem key={thread.id}>
+                {/* TODO(7.10): open the thread. */}
+                <SidebarMenuButton>
+                  <MessageSquareIcon />
+                  <span className={thread.title ? undefined : "text-muted-foreground italic"}>
+                    {thread.title ?? "New chat"}
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+            {isFetchingNextPage && <ThreadSkeletons count={2} />}
+            {hasNextPage && <li ref={sentinelRef} aria-hidden className="h-px" />}
+          </SidebarMenu>
+        )}
+      </SidebarGroupContent>
+    </SidebarGroup>
+  );
+}
+
+function ThreadSkeletons({ count }: { count: number }) {
+  return Array.from({ length: count }, (_, i) => (
+    <SidebarMenuItem key={i}>
+      <SidebarMenuSkeleton showIcon />
+    </SidebarMenuItem>
+  ));
+}

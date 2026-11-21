@@ -5,4 +5,7 @@ export const API_ROUTES = {
     logout: "/auth/logout",
     me: "/auth/me",
   },
+  chat: {
+    threads: "/chat/threads",
+  },
 } as const;
