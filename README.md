@@ -2,9 +2,10 @@
 
 An HR assistant for employees: it answers policy questions with citations, looks up your own leave, attendance and payslips, and applies for or approves leave through chat. It's built so the language model can never see or change more than the signed-in user could.
 
-<!-- Demo video: put the link in and remove the comment markers.
-▶️ **[Watch the demo video](https://youtu.be/YOUR-VIDEO-ID)**: a policy question with citations, applying for leave, a manager approving it, and an impersonation attempt failing.
--->
+## Demo Video
+
+▶️ [Watch](https://www.youtube.com/watch?v=ybvmJk5_PjU)
+
 
 ## Screenshots
 
