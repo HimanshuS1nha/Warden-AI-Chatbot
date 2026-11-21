@@ -1,6 +1,6 @@
 import { revalidateLogic, useForm } from "@tanstack/react-form";
 import { useMutation } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { CircleAlertIcon, Loader2Icon, ShieldCheckIcon } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -25,17 +25,18 @@ import { Input } from "@/components/ui/input";
 
 import { getErrorMessage } from "@/lib/api-error";
 
-import { login } from "@/api/auth";
+import { login, meQueryOptions } from "@/api/auth";
 
-import {
-  loginValidator,
-  type LoginValidatorType,
-} from "@/validators/login.validator";
+import { loginValidator, type LoginValidatorType } from "@/validators/login.validator";
 
 import { DEMO_ACCOUNTS, DEMO_PASSWORD } from "@/constants/demo-accounts";
 import { QUERY_KEYS } from "@/constants/query-keys";
 
 export const Route = createFileRoute("/login")({
+  loader: async ({ context: { queryClient } }) => {
+    const me = await queryClient.ensureQueryData(meQueryOptions).catch(() => null);
+    if (me) throw redirect({ to: "/", replace: true });
+  },
   component: LoginPage,
 });
 
@@ -84,9 +85,7 @@ function LoginPage() {
         <Card>
           <CardHeader className="text-center">
             <CardTitle className="text-xl">Welcome back</CardTitle>
-            <CardDescription>
-              Sign in to ask about policies, leave and your team
-            </CardDescription>
+            <CardDescription>Sign in to ask about policies, leave and your team</CardDescription>
           </CardHeader>
 
           <CardContent>
@@ -102,16 +101,13 @@ function LoginPage() {
                 {loginMutation.isError && (
                   <Alert variant="destructive">
                     <CircleAlertIcon />
-                    <AlertDescription>
-                      {getErrorMessage(loginMutation.error)}
-                    </AlertDescription>
+                    <AlertDescription>{getErrorMessage(loginMutation.error)}</AlertDescription>
                   </Alert>
                 )}
 
                 <form.Field name="email">
                   {(field) => {
-                    const isInvalid =
-                      field.state.meta.isTouched && !field.state.meta.isValid;
+                    const isInvalid = field.state.meta.isTouched && !field.state.meta.isValid;
                     return (
                       <Field data-invalid={isInvalid}>
                         <FieldLabel htmlFor={field.name}>Email</FieldLabel>
@@ -126,9 +122,7 @@ function LoginPage() {
                           onChange={(e) => field.handleChange(e.target.value)}
                           aria-invalid={isInvalid}
                         />
-                        {isInvalid && (
-                          <FieldError errors={field.state.meta.errors} />
-                        )}
+                        {isInvalid && <FieldError errors={field.state.meta.errors} />}
                       </Field>
                     );
                   }}
@@ -136,8 +130,7 @@ function LoginPage() {
 
                 <form.Field name="password">
                   {(field) => {
-                    const isInvalid =
-                      field.state.meta.isTouched && !field.state.meta.isValid;
+                    const isInvalid = field.state.meta.isTouched && !field.state.meta.isValid;
                     return (
                       <Field data-invalid={isInvalid}>
                         <FieldLabel htmlFor={field.name}>Password</FieldLabel>
@@ -151,23 +144,15 @@ function LoginPage() {
                           onChange={(e) => field.handleChange(e.target.value)}
                           aria-invalid={isInvalid}
                         />
-                        {isInvalid && (
-                          <FieldError errors={field.state.meta.errors} />
-                        )}
+                        {isInvalid && <FieldError errors={field.state.meta.errors} />}
                       </Field>
                     );
                   }}
                 </form.Field>
 
                 <Field>
-                  <Button
-                    type="submit"
-                    form="login-form"
-                    disabled={loginMutation.isPending}
-                  >
-                    {loginMutation.isPending && (
-                      <Loader2Icon className="animate-spin" />
-                    )}
+                  <Button type="submit" form="login-form" disabled={loginMutation.isPending}>
+                    {loginMutation.isPending && <Loader2Icon className="animate-spin" />}
                     {loginMutation.isPending ? "Signing in…" : "Sign in"}
                   </Button>
                 </Field>
@@ -196,8 +181,7 @@ function LoginPage() {
             <FieldDescription className="text-center text-xs">
               {DEMO_ACCOUNTS.map((account) => account.email).join(" · ")}
               <br />
-              Password:{" "}
-              <span className="font-mono text-foreground">{DEMO_PASSWORD}</span>
+              Password: <span className="font-mono text-foreground">{DEMO_PASSWORD}</span>
             </FieldDescription>
           </CardFooter>
         </Card>
