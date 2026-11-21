@@ -6,6 +6,7 @@ import {
   CircleCheckIcon,
   CircleSlashIcon,
   ClockIcon,
+  Loader2Icon,
   type LucideIcon,
 } from "lucide-react";
 
@@ -31,8 +32,24 @@ const STATUS_BADGES: Record<
   failed: { label: "Didn't go through", icon: CircleAlertIcon, variant: "destructive" },
 };
 
+export type ConfirmationCardProps = {
+  action: PendingAction;
+  onConfirm: (actionId: string) => void;
+  onCancel: (actionId: string) => void;
+  // The decision in flight for this card, if any.
+  busy: "confirm" | "cancel" | null;
+  // True while any reply is streaming.
+  disabled: boolean;
+};
+
 // A change the agent proposed. Nothing happens until the user confirms.
-export function ConfirmationCard({ action }: { action: PendingAction }) {
+export function ConfirmationCard({
+  action,
+  onConfirm,
+  onCancel,
+  busy,
+  disabled,
+}: ConfirmationCardProps) {
   const { title, icon: Icon } = ACTION_TITLES[action.type];
   const badge = action.status === "pending" ? null : STATUS_BADGES[action.status];
 
@@ -60,8 +77,17 @@ export function ConfirmationCard({ action }: { action: PendingAction }) {
 
       {action.status === "pending" && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm">Confirm</Button>
-          <Button size="sm" variant="outline">
+          <Button size="sm" disabled={disabled} onClick={() => onConfirm(action.id)}>
+            {busy === "confirm" && <Loader2Icon className="animate-spin" />}
+            Confirm
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => onCancel(action.id)}
+          >
+            {busy === "cancel" && <Loader2Icon className="animate-spin" />}
             Cancel
           </Button>
           <span className="text-xs text-muted-foreground">Nothing changes until you confirm.</span>

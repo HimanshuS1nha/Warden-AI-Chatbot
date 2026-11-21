@@ -14,23 +14,50 @@ const MAX_MESSAGE_LENGTH = 2000;
 // Show the counter only when it starts to matter.
 const COUNTER_FROM = MAX_MESSAGE_LENGTH - 200;
 
-export function ChatComposer({ isStreaming }: { isStreaming: boolean }) {
+type Props = {
+  onSend: (message: string) => void;
+  onStop: () => void;
+  isStreaming: boolean;
+  // While the thread is still loading.
+  disabled?: boolean;
+};
+
+export function ChatComposer({ onSend, onStop, isStreaming, disabled = false }: Props) {
   const [value, setValue] = useState("");
   const length = value.trim().length;
   const tooLong = length > MAX_MESSAGE_LENGTH;
+  const canSend = !disabled && !isStreaming && length > 0 && !tooLong;
+
+  const submit = () => {
+    if (!canSend) return;
+    onSend(value);
+    setValue("");
+  };
 
   return (
     <form
-      onSubmit={(e) => e.preventDefault()}
+      onSubmit={(e) => {
+        e.preventDefault();
+        submit();
+      }}
       className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-4"
     >
       <InputGroup className="rounded-xl bg-card shadow-xs">
         <InputGroupTextarea
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter sends; Shift+Enter is a new line. Skip while an IME is
+            // composing, where Enter picks a candidate.
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              submit();
+            }
+          }}
           placeholder="Ask about policies, your leave or your team…"
           aria-label="Message"
           aria-invalid={tooLong}
+          disabled={disabled}
           rows={1}
           className="max-h-48 min-h-12 px-3.5 pt-3"
         />
@@ -52,6 +79,7 @@ export function ChatComposer({ isStreaming }: { isStreaming: boolean }) {
                 size="icon-sm"
                 className="rounded-full"
                 aria-label="Stop"
+                onClick={onStop}
               >
                 <SquareIcon className="fill-current" />
               </InputGroupButton>
@@ -62,7 +90,7 @@ export function ChatComposer({ isStreaming }: { isStreaming: boolean }) {
                 size="icon-sm"
                 className="rounded-full"
                 aria-label="Send"
-                disabled={length === 0 || tooLong}
+                disabled={!canSend}
               >
                 <ArrowUpIcon />
               </InputGroupButton>

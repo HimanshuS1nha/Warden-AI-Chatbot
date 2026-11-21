@@ -1,14 +1,9 @@
-import {
-  CopyIcon,
-  RotateCwIcon,
-  ShieldCheckIcon,
-  ThumbsDownIcon,
-  ThumbsUpIcon,
-} from "lucide-react";
+import { CheckIcon, CopyIcon, RotateCwIcon, ShieldCheckIcon } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 
 import { CitationList, CitationSheet } from "@/components/chat/citations";
-import { ConfirmationCard } from "@/components/chat/confirmation-card";
+import { ConfirmationCard, type ConfirmationCardProps } from "@/components/chat/confirmation-card";
 import { ChatMarkdown } from "@/components/chat/markdown";
 import { ToolActivity } from "@/components/chat/tool-activity";
 import { Button } from "@/components/ui/button";
@@ -16,11 +11,22 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 import type { AssistantChatMessage, ChatMessage, Citation, UserChatMessage } from "@/types/chat";
 
-export function ChatMessageItem({ message }: { message: ChatMessage }) {
+type ActionHandlers = Omit<ConfirmationCardProps, "action">;
+
+type AssistantMessageProps = ActionHandlers & {
+  message: AssistantChatMessage;
+  // Set when the reply failed and its question can be asked again.
+  onRetry?: () => void;
+  retryDisabled?: boolean;
+};
+
+type ChatMessageItemProps = Omit<AssistantMessageProps, "message"> & { message: ChatMessage };
+
+export function ChatMessageItem({ message, ...props }: ChatMessageItemProps) {
   return message.role === "user" ? (
     <UserMessage message={message} />
   ) : (
-    <AssistantMessage message={message} />
+    <AssistantMessage message={message} {...props} />
   );
 }
 
@@ -34,7 +40,12 @@ function UserMessage({ message }: { message: UserChatMessage }) {
   );
 }
 
-function AssistantMessage({ message }: { message: AssistantChatMessage }) {
+function AssistantMessage({
+  message,
+  onRetry,
+  retryDisabled,
+  ...actionHandlers
+}: AssistantMessageProps) {
   const [openCitation, setOpenCitation] = useState<Citation | null>(null);
   const isStreaming = message.status === "streaming";
   const isThinking = isStreaming && message.content === "";
@@ -66,18 +77,26 @@ function AssistantMessage({ message }: { message: AssistantChatMessage }) {
         {message.status === "error" && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             <span className="flex-1">{message.error}</span>
-            <Button size="sm" variant="outline">
-              <RotateCwIcon />
-              Retry
-            </Button>
+            {onRetry && (
+              <Button size="sm" variant="outline" onClick={onRetry} disabled={retryDisabled}>
+                <RotateCwIcon />
+                Retry
+              </Button>
+            )}
           </div>
+        )}
+
+        {message.status === "stopped" && (
+          <p className="text-xs text-muted-foreground italic">You stopped this reply.</p>
         )}
 
         <CitationList citations={message.citations} onCitationClick={setOpenCitation} />
 
-        {message.action && <ConfirmationCard action={message.action} />}
+        {message.action && <ConfirmationCard action={message.action} {...actionHandlers} />}
 
-        {message.status === "done" && <MessageActions message={message} />}
+        {message.status === "done" && message.content && (
+          <MessageActions content={message.content} />
+        )}
       </div>
 
       <CitationSheet
@@ -102,47 +121,37 @@ function ThinkingDots() {
   );
 }
 
-function MessageActions({ message }: { message: AssistantChatMessage }) {
+function MessageActions({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Couldn't copy the reply");
+    }
+  };
+
+  // TODO(7.16): thumbs up and down, once the server has a feedback endpoint.
   return (
     <div className="-ml-1.5 flex items-center gap-0.5 text-muted-foreground">
-      <ActionButton label="Copy">
-        <CopyIcon />
-      </ActionButton>
-      <ActionButton label="Good answer" pressed={message.feedback === "up"}>
-        <ThumbsUpIcon />
-      </ActionButton>
-      <ActionButton label="Bad answer" pressed={message.feedback === "down"}>
-        <ThumbsDownIcon />
-      </ActionButton>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={copied ? "Copied" : "Copy"}
+              onClick={() => void copy()}
+            />
+          }
+        >
+          {copied ? <CheckIcon /> : <CopyIcon />}
+        </TooltipTrigger>
+        <TooltipContent>{copied ? "Copied" : "Copy"}</TooltipContent>
+      </Tooltip>
     </div>
-  );
-}
-
-function ActionButton({
-  label,
-  pressed,
-  children,
-}: {
-  label: string;
-  pressed?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={label}
-            aria-pressed={pressed}
-            className="aria-pressed:text-primary aria-pressed:[&_svg]:fill-primary/20"
-          />
-        }
-      >
-        {children}
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
   );
 }

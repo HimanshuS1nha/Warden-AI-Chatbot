@@ -8,7 +8,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 
 import { getErrorMessage } from "@/lib/api-error";
 
-import { createThread } from "@/api/chat";
+import { createThread, messagesInfiniteQueryOptions } from "@/api/chat";
 
 import { QUERY_KEYS } from "@/constants/query-keys";
 
@@ -39,6 +39,11 @@ export function NewChatButton({
         // The list hasn't loaded (or failed), so there's nothing to add to.
         void queryClient.invalidateQueries({ queryKey: QUERY_KEYS.threads });
       }
+      // A new thread has no messages: seed its cache so the page skips loading.
+      queryClient.setQueryData(messagesInfiniteQueryOptions(thread.id).queryKey, {
+        pages: [{ messages: [], next: null }],
+        pageParams: [null],
+      });
       if (isMobile) setOpenMobile(false);
       await navigate({ to: "/chat/$threadId", params: { threadId: thread.id } });
     },

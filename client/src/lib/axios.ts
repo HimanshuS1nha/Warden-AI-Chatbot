@@ -28,7 +28,8 @@ const NO_REFRESH_ROUTES: ReadonlySet<string> = new Set([
 // second one look like token reuse.
 let refreshPromise: Promise<void> | null = null;
 
-function refreshSession(): Promise<void> {
+// Exported for the chat stream, which uses fetch and so bypasses this interceptor.
+export function refreshSession(): Promise<void> {
   refreshPromise ??= axios
     .post(API_ROUTES.auth.refresh)
     .then(() => undefined)

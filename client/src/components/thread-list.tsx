@@ -1,7 +1,8 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { MessageSquareIcon, RotateCwIcon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
+import { useInView } from "react-intersection-observer";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -35,19 +36,10 @@ export function ThreadList() {
   const { isMobile, setOpenMobile } = useSidebar();
 
   // Load the next page when the end of the list scrolls into view.
-  const sentinelRef = useRef<HTMLLIElement>(null);
+  const { ref: sentinelRef, inView } = useInView({ rootMargin: "200px" });
   useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel || !hasNextPage || isFetchingNextPage) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) void fetchNextPage();
-      },
-      { rootMargin: "200px" },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+    if (inView && hasNextPage && !isFetchingNextPage) void fetchNextPage();
+  }, [inView, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const threads = data?.pages.flatMap((page) => page.threads) ?? [];
 
