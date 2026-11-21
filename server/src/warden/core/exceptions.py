@@ -8,7 +8,14 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from warden.core.request_context import REQUEST_ID_HEADER, context_for, use_request_context
-from warden.services.errors import Forbidden, NotFound, RuleViolation, ServiceError
+from warden.services.errors import (
+    FileTooLarge,
+    Forbidden,
+    NotFound,
+    RuleViolation,
+    ServiceError,
+    Unavailable,
+)
 
 # Every error response has the shape {"message": str}. Validation errors add
 # an "errors" list with one entry per invalid field. Service errors add a
@@ -77,8 +84,12 @@ def _service_error_status(exc: ServiceError) -> int:
         return status.HTTP_404_NOT_FOUND
     if isinstance(exc, Forbidden):
         return status.HTTP_403_FORBIDDEN
+    if isinstance(exc, FileTooLarge):
+        return status.HTTP_413_CONTENT_TOO_LARGE
     if isinstance(exc, RuleViolation):
         return status.HTTP_422_UNPROCESSABLE_CONTENT
+    if isinstance(exc, Unavailable):
+        return status.HTTP_503_SERVICE_UNAVAILABLE
     return status.HTTP_500_INTERNAL_SERVER_ERROR
 
 

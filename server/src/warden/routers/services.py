@@ -8,8 +8,10 @@ from typing import Annotated
 
 from fastapi import Depends
 
+from warden.core.config import get_settings
 from warden.core.dependencies import DbSession
 from warden.services.attendance import AttendanceService
+from warden.services.documents import DocumentService
 from warden.services.employee import EmployeeService
 from warden.services.holiday import HolidayService
 from warden.services.leave import LeaveService
@@ -36,8 +38,13 @@ def get_holiday_service(db: DbSession) -> HolidayService:
     return HolidayService(db)
 
 
+def get_document_service(db: DbSession) -> DocumentService:
+    return DocumentService(db, upload_dir=get_settings().upload_dir)
+
+
 LeaveServiceDep = Annotated[LeaveService, Depends(get_leave_service)]
 EmployeeServiceDep = Annotated[EmployeeService, Depends(get_employee_service)]
 AttendanceServiceDep = Annotated[AttendanceService, Depends(get_attendance_service)]
 PayslipServiceDep = Annotated[PayslipService, Depends(get_payslip_service)]
 HolidayServiceDep = Annotated[HolidayService, Depends(get_holiday_service)]
+DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]

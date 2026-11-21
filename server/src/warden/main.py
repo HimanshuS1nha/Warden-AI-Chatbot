@@ -10,7 +10,7 @@ from warden.core.exceptions import register_exception_handlers
 from warden.core.logging import configure_logging
 from warden.core.request_context import RequestContextMiddleware
 from warden.graph.resources import open_agent_resources
-from warden.routers import auth, chat, employees, health, holidays, me, team
+from warden.routers import admin, auth, chat, employees, health, holidays, me, team
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -55,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(employees.router)
     app.include_router(holidays.router)
     app.include_router(chat.router)
+    app.include_router(admin.router)
 
     return app
 

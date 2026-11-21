@@ -68,7 +68,9 @@ def use_agent(client: AsyncClient, connection: AsyncConnection) -> Iterator[Call
     checkpointer = InMemorySaver()
 
     def _use(model: ScriptedChatModel | None, retriever: Retriever | None = None) -> None:
-        resources = AgentResources(checkpointer=checkpointer, chat_model=model, retriever=retriever)
+        resources = AgentResources(
+            checkpointer=checkpointer, chat_model=model, retriever=retriever, indexer=None
+        )
         app.dependency_overrides[get_agent] = lambda: resources
 
     app.dependency_overrides[get_session_factory] = lambda: (

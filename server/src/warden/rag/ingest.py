@@ -170,7 +170,7 @@ async def ingest(
                 counter=counter,
                 force=force,
             )
-        await _switch_active_version(
+        await switch_active_version(
             session, document, cache_dir=cache_dir, embedder=embedder, counter=counter, index=index
         )
 
@@ -219,7 +219,7 @@ async def _finish(
     calls_before: int,
     hits_before: int,
 ) -> IngestReport:
-    report.store_chunks = await _rebuild_store(session, cache_dir, embedder)
+    report.store_chunks = await rebuild_store(session, cache_dir, embedder)
     report.index_points = await index.count()
     report.embedding_api_calls = embedder.api_calls - calls_before
     report.embedding_cache_hits = embedder.cache_hits - hits_before
@@ -294,15 +294,35 @@ async def _ingest_version(
     row.effective_from = entry.effective_date
     row.status = DocumentVersionStatus.INDEXING
     await session.commit()
+    return await index_version(
+        session, document, row, cache_dir=cache_dir, embedder=embedder, counter=counter
+    )
 
+
+async def index_version(
+    session: AsyncSession,
+    document: DocumentModel,
+    row: DocumentVersionModel,
+    *,
+    cache_dir: Path,
+    embedder: Embedder,
+    counter: TokenCounter,
+) -> Outcome:
+    """Parse, chunk and embed the version's file, save its chunks to the
+    cache and mark it `ready`, or `failed` if any of that fails. Doesn't
+    touch Qdrant: `switch_active_version` does that. Raises EmbeddingError,
+    which the next version would hit too."""
+    label = f"{document.slug} v{row.version}"
+    path = Path(row.file_path)
+    chunks_path = version_chunks_path(cache_dir, document.slug, row.version)
     started = time.perf_counter()
-    info = DocumentInfo(entry.slug, entry.title, entry.version, entry.access_level)
+    info = DocumentInfo(document.slug, document.title, row.version, document.access_level)
     try:
         chunks = await asyncio.to_thread(_parse_and_chunk, path, info, counter)
         # Embedding here, not only when the store is built, means `ready`
         # always has its vectors in the cache.
         await embedder.embed([chunk.embedding_text for chunk in chunks], EmbedTask.DOCUMENT)
-        write_version_chunks(chunks_path, content_hash, chunks)
+        write_version_chunks(chunks_path, row.content_hash, chunks)
     except EmbeddingError:
         # Not this document's fault, and the next one would fail the same way.
         row.status = DocumentVersionStatus.FAILED
@@ -329,7 +349,7 @@ def _parse_and_chunk(path: Path, info: DocumentInfo, counter: TokenCounter) -> l
     return chunks
 
 
-async def _switch_active_version(
+async def switch_active_version(
     session: AsyncSession,
     document: DocumentModel,
     *,
@@ -341,7 +361,14 @@ async def _switch_active_version(
     """Make the document's newest ready version the one search serves:
     index it, mark it active in Postgres, then remove every other point of
     the document from Qdrant. With no ready version, the document's points
-    are all removed."""
+    are all removed.
+
+    The document row stays locked from start to finish. Two switches for one
+    document (an upload and a reindex, or two app workers) would otherwise
+    interleave, and one could delete the points the other just wrote."""
+    await session.execute(
+        select(DocumentModel.id).where(DocumentModel.id == document.id).with_for_update()
+    )
     latest = await session.scalar(
         select(DocumentVersionModel)
         .where(
@@ -362,8 +389,13 @@ async def _switch_active_version(
         keep = await index.upsert(chunks, vectors)
 
     document.active_version_id = latest.id if latest is not None else None
-    await session.commit()
-    removed = await index.retire_stale(document.slug, keep)
+    await session.flush()
+    try:
+        removed = await index.retire_stale(document.slug, keep)
+    finally:
+        # Commits the new active version and releases the lock, even if
+        # Qdrant failed: the new points are in, and the next run retries.
+        await session.commit()
     if removed:
         logger.info("%s: removed %d points of other versions", document.slug, removed)
 
@@ -427,7 +459,7 @@ async def _load_chunks(
     ]
 
 
-async def _rebuild_store(session: AsyncSession, cache_dir: Path, embedder: Embedder) -> int:
+async def rebuild_store(session: AsyncSession, cache_dir: Path, embedder: Embedder) -> int:
     chunks: list[Chunk] = []
     for document, version in await _active_versions(session):
         loaded = await _load_chunks(document, version, cache_dir)

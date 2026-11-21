@@ -5,6 +5,7 @@
 - Forbidden: the caller's role can't use this operation at all.
 - RuleViolation: a business rule refused the request. Each subclass has a
   stable `code` that clients and the agent can rely on.
+- Unavailable: something the operation needs (Qdrant, a model) is down.
 """
 
 from typing import Any, ClassVar
@@ -63,3 +64,24 @@ class ActionExpired(RuleViolation):
     """A proposed change wasn't confirmed in time and can't run any more."""
 
     code = "action_expired"
+
+
+class InvalidUpload(RuleViolation):
+    """The file isn't a PDF, DOCX or Markdown file, or its content doesn't
+    match its extension."""
+
+    code = "invalid_upload"
+
+
+class FileTooLarge(RuleViolation):
+    code = "file_too_large"
+
+
+class VersionConflict(RuleViolation):
+    """A document version that isn't newer than every existing version."""
+
+    code = "version_conflict"
+
+
+class Unavailable(ServiceError):
+    code = "unavailable"

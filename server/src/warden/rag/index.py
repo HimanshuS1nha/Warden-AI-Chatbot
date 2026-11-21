@@ -35,6 +35,7 @@ from qdrant_client.models import (
 )
 
 from warden.core.config import Settings
+from warden.models import AccessLevel
 from warden.rag.chunking import Chunk
 from warden.rag.embeddings import Vectors
 from warden.rag.sparse import Bm25Encoder, SparseEncoder
@@ -199,6 +200,21 @@ class PolicyIndex:
                 self.collection, points_selector=FilterSelector(filter=stale), wait=True
             )
         return count
+
+    async def set_document_fields(
+        self, doc_slug: str, *, title: str, access_level: AccessLevel
+    ) -> None:
+        """Overwrite the title and access level on every point of a document."""
+        await self.client.set_payload(
+            self.collection,
+            {"title": title, "access_level": access_level.value},
+            points=FilterSelector(
+                filter=Filter(
+                    must=[FieldCondition(key="doc_slug", match=MatchValue(value=doc_slug))]
+                )
+            ),
+            wait=True,
+        )
 
     async def count(self, doc_slug: str | None = None) -> int:
         count_filter = (

@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     cache_dir: Path = Path(".cache")
     # Local models (BM25, reranker), downloaded on first use.
     models_dir: Path = Path(".cache/models")
+    # Documents uploaded through the admin API. Not a cache: the versions in
+    # Postgres point at these files.
+    upload_dir: Path = Path("uploads")
 
     # One key per provider, shared by everything that calls it: embeddings
     # and the agent's chat model.
