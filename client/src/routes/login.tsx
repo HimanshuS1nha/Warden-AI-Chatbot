@@ -34,7 +34,7 @@ import { QUERY_KEYS } from "@/constants/query-keys";
 
 export const Route = createFileRoute("/login")({
   loader: async ({ context: { queryClient } }) => {
-    const me = await queryClient.ensureQueryData(meQueryOptions).catch(() => null);
+    const me = await queryClient.query(meQueryOptions).catch(() => null);
     if (me) throw redirect({ to: "/", replace: true });
   },
   component: LoginPage,

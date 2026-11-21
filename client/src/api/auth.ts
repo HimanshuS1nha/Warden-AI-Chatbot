@@ -13,6 +13,10 @@ export async function login(credentials: LoginValidatorType): Promise<Employee> 
   return data;
 }
 
+export async function logout(): Promise<void> {
+  await axios.post(API_ROUTES.auth.logout);
+}
+
 export async function getMe(): Promise<Employee> {
   const { data } = await axios.get<Employee>(API_ROUTES.auth.me);
   return data;
