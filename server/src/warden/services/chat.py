@@ -69,6 +69,24 @@ class ChatService:
             raise NotFound("Thread not found.")
         return thread
 
+    async def rename_thread(
+        self, user: CurrentUser, thread_id: uuid.UUID, title: str
+    ) -> ChatThreadModel:
+        """A title the user picks. The first message only names a thread
+        without one, so it won't overwrite this."""
+        thread = await self.get_thread(user, thread_id)
+        thread.title = " ".join(title.split())
+        await self.db.commit()
+        return thread
+
+    async def delete_thread(self, user: CurrentUser, thread_id: uuid.UUID) -> None:
+        """Delete the thread with its messages, ratings and pending actions.
+        The agent's memory of it is in the checkpointer; the caller deletes
+        that too."""
+        if not await self.chat.delete_thread(thread_id, user.employee_id):
+            raise NotFound("Thread not found.")
+        await self.db.commit()
+
     async def list_threads(
         self, user: CurrentUser, before: uuid.UUID | None = None, limit: int = 20
     ) -> Page[ChatThreadModel]:

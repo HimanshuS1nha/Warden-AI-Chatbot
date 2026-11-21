@@ -27,6 +27,23 @@ class ChatRepository:
             )
         )
 
+    async def thread_exists(self, thread_id: uuid.UUID) -> bool:
+        found = await self.db.scalar(
+            select(ChatThreadModel.id).where(ChatThreadModel.id == thread_id)
+        )
+        return found is not None
+
+    async def delete_thread(self, thread_id: uuid.UUID, employee_id: uuid.UUID) -> bool:
+        """Delete the thread if it belongs to the employee. False if it
+        doesn't. The database cascades to its messages, their ratings and its
+        pending actions. Doesn't commit."""
+        deleted = await self.db.scalar(
+            delete(ChatThreadModel)
+            .where(ChatThreadModel.id == thread_id, ChatThreadModel.employee_id == employee_id)
+            .returning(ChatThreadModel.id)
+        )
+        return deleted is not None
+
     async def list_threads(
         self, employee_id: uuid.UUID, before: uuid.UUID | None, limit: int
     ) -> Sequence[ChatThreadModel]:

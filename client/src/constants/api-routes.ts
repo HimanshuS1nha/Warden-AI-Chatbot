@@ -7,6 +7,7 @@ export const API_ROUTES = {
   },
   chat: {
     threads: "/chat/threads",
+    thread: (threadId: string) => `/chat/threads/${encodeURIComponent(threadId)}`,
     messages: (threadId: string) => `/chat/threads/${encodeURIComponent(threadId)}/messages`,
     confirmAction: (actionId: string) => `/chat/actions/${encodeURIComponent(actionId)}/confirm`,
     feedback: "/chat/feedback",

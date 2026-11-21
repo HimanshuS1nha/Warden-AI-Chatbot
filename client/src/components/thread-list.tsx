@@ -1,19 +1,18 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { Link, useParams } from "@tanstack/react-router";
-import { MessageSquareIcon, RotateCwIcon } from "lucide-react";
+import { useParams } from "@tanstack/react-router";
+import { RotateCwIcon } from "lucide-react";
 import { useEffect } from "react";
 import { useInView } from "react-intersection-observer";
 
+import { ThreadItem } from "@/components/thread-item";
 import { Button } from "@/components/ui/button";
 import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarMenu,
-  SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
-  useSidebar,
 } from "@/components/ui/sidebar";
 
 import { getErrorMessage } from "@/lib/api-error";
@@ -33,7 +32,6 @@ export function ThreadList() {
   } = useInfiniteQuery(threadsInfiniteQueryOptions);
   // Undefined outside a chat page.
   const { threadId: activeThreadId } = useParams({ strict: false });
-  const { isMobile, setOpenMobile } = useSidebar();
 
   // Load the next page when the end of the list scrolls into view.
   const { ref: sentinelRef, inView } = useInView({ rootMargin: "200px" });
@@ -62,19 +60,7 @@ export function ThreadList() {
         ) : (
           <SidebarMenu>
             {threads.map((thread) => (
-              <SidebarMenuItem key={thread.id}>
-                <SidebarMenuButton
-                  isActive={thread.id === activeThreadId}
-                  render={<Link to="/chat/$threadId" params={{ threadId: thread.id }} />}
-                  // On phones the sidebar is an overlay; close it to show the chat.
-                  onClick={() => isMobile && setOpenMobile(false)}
-                >
-                  <MessageSquareIcon />
-                  <span className={thread.title ? undefined : "text-muted-foreground italic"}>
-                    {thread.title ?? "New chat"}
-                  </span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              <ThreadItem key={thread.id} thread={thread} isActive={thread.id === activeThreadId} />
             ))}
             {isFetchingNextPage && <ThreadSkeletons count={2} />}
             {hasNextPage && <li ref={sentinelRef} aria-hidden className="h-px" />}

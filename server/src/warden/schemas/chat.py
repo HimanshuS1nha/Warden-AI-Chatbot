@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from warden.models import MessageRole, PendingActionStatus, PendingActionType
-from warden.services.chat import MAX_FEEDBACK_COMMENT_LENGTH, MAX_MESSAGE_LENGTH
+from warden.services.chat import MAX_FEEDBACK_COMMENT_LENGTH, MAX_MESSAGE_LENGTH, TITLE_LENGTH
 
 # 1 = thumbs up, -1 = thumbs down.
 Rating = Literal[1, -1]
@@ -18,6 +18,13 @@ class ThreadResponse(BaseModel):
     # Null until the first message.
     title: str | None
     created_at: datetime
+
+
+class RenameThread(BaseModel):
+    # Trimmed first, so a blank title is refused.
+    title: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=TITLE_LENGTH)
+    ]
 
 
 class ThreadPage(BaseModel):

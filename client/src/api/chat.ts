@@ -18,10 +18,23 @@ import type {
 
 const THREADS_PAGE_SIZE = 30;
 const MESSAGES_PAGE_SIZE = 30;
+// The longest title the server accepts (TITLE_LENGTH in services/chat.py).
+export const THREAD_TITLE_MAX_LENGTH = 80;
 
 export async function createThread(): Promise<Thread> {
   const { data } = await axios.post<Thread>(API_ROUTES.chat.threads);
   return data;
+}
+
+export async function renameThread(threadId: string, title: string): Promise<Thread> {
+  const { data } = await axios.patch<Thread>(API_ROUTES.chat.thread(threadId), { title });
+  return data;
+}
+
+// Deletes the thread with its messages and anything waiting for confirmation
+// in it.
+export async function deleteThread(threadId: string): Promise<void> {
+  await axios.delete(API_ROUTES.chat.thread(threadId));
 }
 
 export async function getThreads(before: string | null): Promise<ThreadPage> {

@@ -2,7 +2,23 @@ import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 
 import { QUERY_KEYS } from "@/constants/query-keys";
 
-import type { AssistantChatMessage, ChatMessagePage } from "@/types/chat";
+import type { AssistantChatMessage, ChatMessagePage, Thread, ThreadPage } from "@/types/chat";
+
+// The sidebar's threads in the query cache, newest first.
+export type ThreadsData = InfiniteData<ThreadPage, string | null>;
+
+// Changes the loaded threads in place, page by page. Nothing to change if the
+// list hasn't loaded.
+export function updateThreads(queryClient: QueryClient, fn: (threads: Thread[]) => Thread[]) {
+  queryClient.setQueryData<ThreadsData>(
+    QUERY_KEYS.threads,
+    (data) =>
+      data && {
+        ...data,
+        pages: data.pages.map((page) => ({ ...page, threads: fn(page.threads) })),
+      },
+  );
+}
 
 // A thread's messages in the query cache: pages newest first, and each page's
 // messages newest first, as the API returns them.

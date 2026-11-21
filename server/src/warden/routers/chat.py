@@ -29,6 +29,7 @@ from warden.schemas.chat import (
     MessageAction,
     MessagePage,
     MessageResponse,
+    RenameThread,
     SendMessage,
     ThreadPage,
     ThreadResponse,
@@ -79,6 +80,27 @@ async def list_threads(
     return ThreadPage(
         threads=[ThreadResponse.model_validate(t) for t in page.items], next=page.next
     )
+
+
+@router.patch("/threads/{thread_id}")
+async def rename_thread(
+    thread_id: uuid.UUID, body: RenameThread, user: CurrentUserDep, chat: ChatServiceDep
+) -> ThreadResponse:
+    """Give a thread a new title (1 to 80 characters after trimming)."""
+    return ThreadResponse.model_validate(await chat.rename_thread(user, thread_id, body.title))
+
+
+@router.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(
+    thread_id: uuid.UUID, user: CurrentUserDep, chat: ChatServiceDep, agent: AgentDep
+) -> None:
+    """Delete a thread: its messages, ratings, pending actions (which can no
+    longer be confirmed) and the agent's memory of it. LLM call stats stay,
+    without the thread."""
+    await chat.delete_thread(user, thread_id)
+    # After the rows, so a reply still running sees the thread is gone (see
+    # `ChatTurn`) and doesn't leave its memory behind.
+    await agent.checkpointer.adelete_thread(str(thread_id))
 
 
 @router.get("/threads/{thread_id}/messages")
@@ -173,6 +195,7 @@ async def send_message(
         thread=thread,
         message=body.message,
         callbacks=[LLMCallRecorder(session_factory, thread.id)],
+        session_factory=session_factory,
     )
     return _event_stream(turn.events())
 
@@ -261,6 +284,7 @@ async def _follow_up(
         thread=thread,
         message=note,
         callbacks=[LLMCallRecorder(session_factory, thread.id)],
+        session_factory=session_factory,
         from_user=False,
     )
     result = {"action_id": str(action.id), "status": action.status.value, "ok": ok}

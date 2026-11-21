@@ -25,7 +25,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -39,13 +39,16 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from warden.core.dependencies import CurrentUser
 from warden.graph.graph import proposed_action
 from warden.graph.state import AgentState
 from warden.models import ChatThreadModel, UnansweredReason
 from warden.rag.citations import resolve_citations, sources_from_artifacts
+from warden.repositories import ChatRepository
 from warden.services.chat import ChatService
 
 logger = logging.getLogger(__name__)
@@ -128,6 +131,9 @@ class ChatTurn:
     thread: ChatThreadModel
     message: str
     callbacks: list[BaseCallbackHandler]
+    # A session of its own for cleanup: the request's may be mid-operation
+    # when the turn is cut off.
+    session_factory: Callable[[], AsyncSession]
     # False when `message` comes from the app (a confirmation result), not
     # the user: it isn't a question that can go unanswered.
     from_user: bool = True
@@ -135,8 +141,11 @@ class ChatTurn:
     async def events(self) -> AsyncIterator[str]:
         reply: AIMessage | None = None
         tool_results: list[ToolMessage] = []
+        # Read once: after a failed write the session expires the thread, and
+        # reading its attributes again would raise.
+        thread_id = self.thread.id
         config: RunnableConfig = {
-            "configurable": {"thread_id": str(self.thread.id)},
+            "configurable": {"thread_id": str(thread_id)},
             "callbacks": self.callbacks,
         }
         try:
@@ -205,22 +214,32 @@ class ChatTurn:
             # The client went away: the user pressed Stop or left the page.
             # Shielded, since every await in a cancelled scope is cancelled too.
             with anyio.CancelScope(shield=True):
-                await self._close_unfinished_turn(config)
+                await self._close_unfinished_turn(thread_id, config)
             raise
         except Exception:
-            logger.exception("Chat turn failed in thread %s", self.thread.id)
-            await self._close_unfinished_turn(config)
+            logger.exception("Chat turn failed in thread %s", thread_id)
+            await self._close_unfinished_turn(thread_id, config)
             yield sse("error", {"message": ERROR_MESSAGE})
             return
 
         yield sse("done", {"message_id": str(saved.id), "content": content})
 
-    async def _close_unfinished_turn(self, config: RunnableConfig) -> None:
-        """Adds `closing_messages` to the agent's memory of the thread."""
+    async def _close_unfinished_turn(self, thread_id: uuid.UUID, config: RunnableConfig) -> None:
+        """Adds `closing_messages` to the agent's memory of the thread.
+
+        If the thread was deleted during the turn, the run may have saved
+        checkpoints after the delete cleared them: delete those instead.
+        """
         try:
+            async with self.session_factory() as db:
+                deleted = not await ChatRepository(db).thread_exists(thread_id)
+            if deleted:
+                if isinstance(self.graph.checkpointer, BaseCheckpointSaver):
+                    await self.graph.checkpointer.adelete_thread(str(thread_id))
+                return
             state = await self.graph.aget_state(config)
             closing = closing_messages(state.values.get("messages", []))
             if closing:
                 await self.graph.aupdate_state(config, {"messages": closing}, as_node="agent")
         except Exception:
-            logger.exception("Couldn't close the unfinished turn in thread %s", self.thread.id)
+            logger.exception("Couldn't close the unfinished turn in thread %s", thread_id)

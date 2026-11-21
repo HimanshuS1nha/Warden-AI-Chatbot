@@ -15,6 +15,7 @@ import pytest
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatResult
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
@@ -47,7 +48,7 @@ from warden.models import (
 from warden.rag.embeddings import Embedder, EmbedTask
 from warden.rag.retrievers import InMemoryRetriever, MinScoreRetriever, Retriever
 from warden.routers.chat import get_agent, get_session_factory
-from warden.services.chat import MAX_MESSAGE_LENGTH
+from warden.services.chat import MAX_MESSAGE_LENGTH, TITLE_LENGTH
 from warden.services.leave import company_today
 
 Event = tuple[str, dict[str, Any]]
@@ -310,16 +311,19 @@ async def test_a_failed_turn_is_closed_so_the_next_message_doesnt_answer_it(
 
 
 class StallingChatModel(ScriptedChatModel):
-    """Replies from the script, then never finishes its next reply, like a
-    model still writing when the user presses Stop."""
+    """Replies from the script, then holds its next reply, like a model
+    still writing: until `release` is set, or forever without one."""
 
     stall_after: int = 0
     stalled: Any = None
+    release: Any = None
 
     async def _stall_when_scripted_out(self) -> None:
         if len(self.calls) >= self.stall_after:
             self.stalled.set()
-            await asyncio.Future()  # Never resolves.
+            if self.release is None:
+                await asyncio.Future()  # Never resolves.
+            await self.release.wait()
 
     async def _agenerate(
         self, messages: list[BaseMessage], stop: list[str] | None = None, *_: Any, **kwargs: Any
@@ -883,6 +887,127 @@ async def test_only_your_own_assistant_replies_can_be_rated(
     assert (rate.status_code, rate.json()["code"]) == (404, "not_found")
     assert (clear.status_code, clear.json()["code"]) == (404, "not_found")
     assert await db.scalar(select(ChatFeedbackModel.id)) is None
+
+
+# Renaming and deleting threads
+
+
+async def thread_titles(client: AsyncClient) -> dict[str, str | None]:
+    threads = (await client.get("/api/chat/threads")).json()["threads"]
+    return {t["id"]: t["title"] for t in threads}
+
+
+async def test_a_renamed_thread_keeps_its_title_after_the_first_message(
+    client: AsyncClient, make_employee: MakeEmployee, use_agent: Callable[..., None]
+) -> None:
+    use_agent(scripted("Hello."))
+    await login(client, await make_employee())
+    thread_id = await new_thread(client)
+
+    response = await client.patch(
+        f"/api/chat/threads/{thread_id}", json={"title": "  Leave   planning\n"}
+    )
+    await send(client, thread_id, "Hi there")
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Leave planning"
+    assert await thread_titles(client) == {thread_id: "Leave planning"}
+
+
+@pytest.mark.parametrize("title", ["", "   ", "x" * (TITLE_LENGTH + 1)])
+async def test_blank_and_overlong_titles_are_refused(
+    client: AsyncClient, make_employee: MakeEmployee, title: str
+) -> None:
+    await login(client, await make_employee())
+    thread_id = await new_thread(client)
+
+    response = await client.patch(f"/api/chat/threads/{thread_id}", json={"title": title})
+
+    assert response.status_code == 422
+    assert await thread_titles(client) == {thread_id: None}
+
+
+def agent_checkpointer() -> BaseCheckpointSaver[str]:
+    """The checkpointer `use_agent` gave the chat routes."""
+    checkpointer: BaseCheckpointSaver[str] = app.dependency_overrides[get_agent]().checkpointer
+    return checkpointer
+
+
+async def test_deleting_a_thread_removes_its_messages_actions_and_the_agents_memory(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+    use_agent: Callable[..., None],
+) -> None:
+    me = await make_employee()
+    monday = next_monday()
+    await add_balance(db, me, allotted=8, year=monday.year)
+    use_agent(scripted(apply_for(monday), "Click Confirm to apply."))
+    thread_id, action_id = await propose_leave(client, me, monday)
+    kept_id = await new_thread(client)
+    config = {"configurable": {"thread_id": thread_id}}
+    assert await agent_checkpointer().aget_tuple(config) is not None
+
+    response = await client.delete(f"/api/chat/threads/{thread_id}")
+
+    assert response.status_code == 204
+    assert await thread_titles(client) == {kept_id: None}
+    assert (await client.get(f"/api/chat/threads/{thread_id}/messages")).status_code == 404
+    assert await saved_messages(db) == []
+    assert await db.scalar(select(PendingActionModel)) is None
+    # The proposed leave can no longer be confirmed.
+    assert (await client.post(f"/api/chat/actions/{action_id}/confirm")).status_code == 404
+    assert await agent_checkpointer().aget_tuple(config) is None
+    # The LLM call stats stay, without the thread.
+    calls = (await db.scalars(select(LLMCallModel).execution_options(populate_existing=True))).all()
+    assert calls and all(c.thread_id is None for c in calls)
+
+
+async def test_someone_elses_thread_cant_be_renamed_or_deleted(
+    client: AsyncClient, make_employee: MakeEmployee, use_agent: Callable[..., None]
+) -> None:
+    owner, intruder = await make_employee(), await make_employee()
+    use_agent(scripted("Hello."))
+    await login(client, owner)
+    thread_id = await new_thread(client)
+    await send(client, thread_id, "Hi there")
+    await login(client, intruder)
+
+    renamed = await client.patch(f"/api/chat/threads/{thread_id}", json={"title": "Mine now"})
+    deleted = await client.delete(f"/api/chat/threads/{thread_id}")
+
+    assert (renamed.status_code, deleted.status_code) == (404, 404)
+    await login(client, owner)
+    assert await thread_titles(client) == {thread_id: "Hi there"}
+    config = {"configurable": {"thread_id": thread_id}}
+    assert await agent_checkpointer().aget_tuple(config) is not None
+
+
+async def test_a_thread_deleted_mid_reply_leaves_no_agent_memory_behind(
+    client: AsyncClient, make_employee: MakeEmployee, use_agent: Callable[..., None]
+) -> None:
+    slow = StallingChatModel(
+        messages=iter([AIMessage(content="Here's a summary.")]),
+        stall_after=0,
+        stalled=asyncio.Event(),
+        release=asyncio.Event(),
+    )
+    use_agent(slow)
+    await login(client, await make_employee())
+    thread_id = await new_thread(client)
+
+    # Deleted from another tab while the reply is being written. The reply
+    # finishes after the delete, and the graph saves its memory of it.
+    request = asyncio.create_task(send(client, thread_id, "Summarise my leave"))
+    await asyncio.wait_for(slow.stalled.wait(), timeout=5)
+    assert (await client.delete(f"/api/chat/threads/{thread_id}")).status_code == 204
+    slow.release.set()
+    events = await request
+
+    # The reply can't be saved without its thread.
+    assert events[-1] == ("error", {"message": ERROR_MESSAGE})
+    config = {"configurable": {"thread_id": thread_id}}
+    assert await agent_checkpointer().aget_tuple(config) is None
 
 
 # Unanswered policy questions

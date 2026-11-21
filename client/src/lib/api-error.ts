@@ -18,6 +18,8 @@ export function getErrorMessage(error: unknown): string {
   return "Something went wrong. Please try again.";
 }
 
+export const isNotFound = (error: unknown) => isAxiosError(error) && error.response?.status === 404;
+
 // 4xx errors won't change on a retry.
 export function isClientError(error: unknown): boolean {
   const status = isAxiosError(error) ? error.response?.status : undefined;
