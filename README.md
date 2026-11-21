@@ -6,9 +6,9 @@ An HR assistant for employees: it answers policy questions with citations, looks
 ▶️ **[Watch the demo video](https://youtu.be/YOUR-VIDEO-ID)**: a policy question with citations, applying for leave, a manager approving it, and an impersonation attempt failing.
 -->
 
-<!-- ## Screenshots -->
+## Screenshots
 
-<!-- Add screenshots here: the chat with a cited policy answer, a confirmation card, and the manager's view. -->
+![Warden](https://github.com/user-attachments/assets/d9b9c850-6dd0-4781-b939-9e0e0a920838)
 
 ## Setup instructions
 
