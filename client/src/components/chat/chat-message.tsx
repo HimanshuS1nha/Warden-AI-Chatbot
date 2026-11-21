@@ -1,4 +1,11 @@
-import { CheckIcon, CopyIcon, RotateCwIcon, ShieldCheckIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CopyIcon,
+  RotateCwIcon,
+  ShieldCheckIcon,
+  ThumbsDownIcon,
+  ThumbsUpIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -9,7 +16,13 @@ import { ToolActivity } from "@/components/chat/tool-activity";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-import type { AssistantChatMessage, ChatMessage, Citation, UserChatMessage } from "@/types/chat";
+import type {
+  AssistantChatMessage,
+  ChatMessage,
+  Citation,
+  Rating,
+  UserChatMessage,
+} from "@/types/chat";
 
 type ActionHandlers = Omit<ConfirmationCardProps, "action">;
 
@@ -18,6 +31,7 @@ type AssistantMessageProps = ActionHandlers & {
   // Set when the reply failed and its question can be asked again.
   onRetry?: () => void;
   retryDisabled?: boolean;
+  onRate: (messageId: string, rating: Rating | null) => void;
 };
 
 type ChatMessageItemProps = Omit<AssistantMessageProps, "message"> & { message: ChatMessage };
@@ -44,6 +58,7 @@ function AssistantMessage({
   message,
   onRetry,
   retryDisabled,
+  onRate,
   ...actionHandlers
 }: AssistantMessageProps) {
   const [openCitation, setOpenCitation] = useState<Citation | null>(null);
@@ -95,7 +110,7 @@ function AssistantMessage({
         {message.action && <ConfirmationCard action={message.action} {...actionHandlers} />}
 
         {message.status === "done" && message.content && (
-          <MessageActions content={message.content} />
+          <MessageActions message={message} onRate={onRate} />
         )}
       </div>
 
@@ -121,12 +136,21 @@ function ThinkingDots() {
   );
 }
 
-function MessageActions({ content }: { content: string }) {
+// Local ids belong to replies the server never saved (failed or stopped).
+const isSaved = (message: AssistantChatMessage) => !message.id.startsWith("local-");
+
+function MessageActions({
+  message,
+  onRate,
+}: {
+  message: AssistantChatMessage;
+  onRate: (messageId: string, rating: Rating | null) => void;
+}) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(message.content);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -134,24 +158,64 @@ function MessageActions({ content }: { content: string }) {
     }
   };
 
-  // TODO(7.16): thumbs up and down, once the server has a feedback endpoint.
+  // Clicking the pressed thumb again removes the rating.
+  const rate = (rating: Rating) => onRate(message.id, message.feedback === rating ? null : rating);
+
   return (
     <div className="-ml-1.5 flex items-center gap-0.5 text-muted-foreground">
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label={copied ? "Copied" : "Copy"}
-              onClick={() => void copy()}
-            />
-          }
-        >
-          {copied ? <CheckIcon /> : <CopyIcon />}
-        </TooltipTrigger>
-        <TooltipContent>{copied ? "Copied" : "Copy"}</TooltipContent>
-      </Tooltip>
+      <ActionButton label={copied ? "Copied" : "Copy"} onClick={() => void copy()}>
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </ActionButton>
+      {isSaved(message) && (
+        <>
+          <ActionButton
+            label="Good answer"
+            pressed={message.feedback === 1}
+            onClick={() => rate(1)}
+          >
+            <ThumbsUpIcon />
+          </ActionButton>
+          <ActionButton
+            label="Bad answer"
+            pressed={message.feedback === -1}
+            onClick={() => rate(-1)}
+          >
+            <ThumbsDownIcon />
+          </ActionButton>
+        </>
+      )}
     </div>
+  );
+}
+
+function ActionButton({
+  label,
+  pressed,
+  onClick,
+  children,
+}: {
+  label: string;
+  pressed?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={label}
+            aria-pressed={pressed}
+            onClick={onClick}
+            className="aria-pressed:text-primary aria-pressed:[&_svg]:fill-primary/20"
+          />
+        }
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }

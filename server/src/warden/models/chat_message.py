@@ -3,10 +3,11 @@ from typing import Any
 
 from sqlalchemy import ForeignKey, Index, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from warden.core.database import Base, UUIDPrimaryKey
 from warden.models.enums import MessageRole, pg_enum
+from warden.models.pending_action import PendingActionModel
 
 
 class ChatMessageModel(UUIDPrimaryKey, Base):
@@ -37,3 +38,6 @@ class ChatMessageModel(UUIDPrimaryKey, Base):
     pending_action_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("pending_actions.id", ondelete="SET NULL")
     )
+    # Loaded explicitly where needed (selectinload); "raise" stops an
+    # accidental lazy load, which can't run under asyncio anyway.
+    pending_action: Mapped[PendingActionModel | None] = relationship(lazy="raise")

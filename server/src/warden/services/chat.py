@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from warden.core.dependencies import CurrentUser
 from warden.models import (
+    ChatFeedbackModel,
     ChatMessageModel,
     ChatThreadModel,
     MessageRole,
@@ -24,9 +25,10 @@ from warden.models import (
     UnansweredReason,
 )
 from warden.repositories import ChatRepository
-from warden.services.errors import NotFound
+from warden.services.errors import InvalidInput, NotFound
 
 MAX_MESSAGE_LENGTH = 2000
+MAX_FEEDBACK_COMMENT_LENGTH = 1000
 MAX_PAGE_SIZE = 100
 TITLE_LENGTH = 80
 
@@ -125,6 +127,41 @@ class ChatService:
         )
         self.db.add(message)
         await self.db.commit()
+        return message
+
+    # Feedback
+
+    async def feedback_for(
+        self, user: CurrentUser, messages: Sequence[ChatMessageModel]
+    ) -> dict[uuid.UUID, int]:
+        """The user's ratings of these messages, by message id."""
+        rows = await self.chat.feedback_for(user.employee_id, [m.id for m in messages])
+        return {message_id: row.rating for message_id, row in rows.items()}
+
+    async def rate_message(
+        self, user: CurrentUser, message_id: uuid.UUID, rating: int, comment: str | None
+    ) -> ChatFeedbackModel:
+        """Thumbs up (1) or down (-1) on one of the assistant's replies in the
+        user's own threads. Rating again replaces the earlier rating."""
+        await self._reply_to_rate(user, message_id)
+        feedback = await self.chat.upsert_feedback(
+            user.employee_id, message_id, rating, comment or None
+        )
+        await self.db.commit()
+        return feedback
+
+    async def clear_rating(self, user: CurrentUser, message_id: uuid.UUID) -> None:
+        """Remove the user's rating of a reply. Fine if there was none."""
+        await self._reply_to_rate(user, message_id)
+        await self.chat.delete_feedback(user.employee_id, message_id)
+        await self.db.commit()
+
+    async def _reply_to_rate(self, user: CurrentUser, message_id: uuid.UUID) -> ChatMessageModel:
+        message = await self.chat.get_message(message_id, user.employee_id)
+        if message is None:
+            raise NotFound("Message not found.")
+        if message.role != MessageRole.ASSISTANT:
+            raise InvalidInput("Only the assistant's replies can be rated.")
         return message
 
     # Unanswered questions

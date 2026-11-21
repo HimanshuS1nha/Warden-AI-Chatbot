@@ -3,6 +3,7 @@ the caller's own threads: someone else's thread is a 404."""
 
 import uuid
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -15,14 +16,17 @@ from warden.core.database import SessionLocal
 from warden.core.dependencies import CurrentUser, CurrentUserDep, DbSession
 from warden.graph.graph import build_graph
 from warden.graph.llm_calls import LLMCallRecorder
-from warden.graph.pending_actions import PendingActions
+from warden.graph.pending_actions import PendingActions, utc_now, visible_status
 from warden.graph.prompts import build_system_prompt, cancellation_note, confirmation_note
 from warden.graph.resources import AgentResources
 from warden.graph.state import AgentState
 from warden.graph.streaming import ChatTurn, sse
 from warden.graph.tools import ToolServices, build_tools
-from warden.models import PendingActionModel
+from warden.models import ChatMessageModel, PendingActionModel, PendingActionType
 from warden.schemas.chat import (
+    FeedbackRequest,
+    FeedbackResponse,
+    MessageAction,
     MessagePage,
     MessageResponse,
     SendMessage,
@@ -87,9 +91,52 @@ async def list_messages(
 ) -> MessagePage:
     """The thread's messages, newest first."""
     page = await chat.list_messages(user, thread_id, before, limit)
+    feedback = await chat.feedback_for(user, page.items)
+    now = utc_now()
     return MessagePage(
-        messages=[MessageResponse.model_validate(m) for m in page.items], next=page.next
+        messages=[_message_response(m, feedback.get(m.id), now) for m in page.items],
+        next=page.next,
     )
+
+
+def _message_response(
+    message: ChatMessageModel, rating: int | None, now: datetime
+) -> MessageResponse:
+    action = message.pending_action
+    return MessageResponse(
+        id=message.id,
+        role=message.role,
+        content=message.content,
+        citations=message.citations,
+        action=MessageAction(
+            id=action.id,
+            action_type=PendingActionType(action.action_type),
+            summary=action.summary,
+            status=visible_status(action, now),
+            expires_at=action.expires_at,
+        )
+        if action
+        else None,
+        feedback=rating,
+        created_at=message.created_at,
+    )
+
+
+@router.post("/feedback")
+async def rate_message(
+    body: FeedbackRequest, user: CurrentUserDep, chat: ChatServiceDep
+) -> FeedbackResponse:
+    """Thumbs up or down on one of the assistant's replies. Rating the same
+    reply again replaces the earlier rating. Someone else's message is a 404;
+    the user's own message is a 422 (`invalid_input`)."""
+    feedback = await chat.rate_message(user, body.message_id, body.rating, body.comment)
+    return FeedbackResponse.model_validate(feedback)
+
+
+@router.delete("/feedback/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_rating(message_id: uuid.UUID, user: CurrentUserDep, chat: ChatServiceDep) -> None:
+    """Remove the caller's rating of a reply. Fine if there was none."""
+    await chat.clear_rating(user, message_id)
 
 
 @router.post(

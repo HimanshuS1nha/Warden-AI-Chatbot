@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { getErrorMessage } from "@/lib/api-error";
+import { type MessagesData, updateAssistantMessage, updateMessagePages } from "@/lib/chat-cache";
 import { StreamHttpError, streamChat } from "@/lib/stream";
 
 import { API_ROUTES } from "@/constants/api-routes";
@@ -17,10 +18,6 @@ import type {
   ThreadPage,
   UserChatMessage,
 } from "@/types/chat";
-
-type MessagesData = InfiniteData<ChatMessagePage, string | null>;
-
-const EMPTY: MessagesData = { pages: [{ messages: [], next: null }], pageParams: [null] };
 
 // Ids for messages the server hasn't confirmed yet. The reply gets its real
 // id from `done`; the user's message keeps this one until the next refetch.
@@ -37,6 +34,7 @@ function newAssistantMessage(): AssistantChatMessage {
     tools: [],
     citations: [],
     action: null,
+    feedback: null,
   };
 }
 
@@ -60,12 +58,8 @@ export function useChatStream(threadId: string) {
 
   // Cache helpers. Page 0 holds the newest messages, newest first.
 
-  const updatePages = (fn: (pages: ChatMessagePage[]) => ChatMessagePage[]) => {
-    queryClient.setQueryData<MessagesData>(messagesKey, (data = EMPTY) => ({
-      ...data,
-      pages: fn(data.pages),
-    }));
-  };
+  const updatePages = (fn: (pages: ChatMessagePage[]) => ChatMessagePage[]) =>
+    updateMessagePages(queryClient, threadId, fn);
 
   // `messages` oldest first, as they happen.
   const append = (...messages: ChatMessage[]) => {
@@ -87,14 +81,7 @@ export function useChatStream(threadId: string) {
   const updateAssistant = (
     id: string,
     fn: (message: AssistantChatMessage) => AssistantChatMessage,
-  ) => {
-    updatePages((pages) =>
-      pages.map((page) => ({
-        ...page,
-        messages: page.messages.map((m) => (m.id === id && m.role === "assistant" ? fn(m) : m)),
-      })),
-    );
-  };
+  ) => updateAssistantMessage(queryClient, threadId, id, fn);
 
   const setActionStatus = (actionId: string, status: PendingActionStatus) => {
     updatePages((pages) =>
@@ -264,6 +251,10 @@ export function useChatStream(threadId: string) {
       // there's no follow-up reply, so drop the placeholder.
       remove(reply.id);
       if (error.code === "action_expired") setActionStatus(actionId, "expired");
+      // Handled elsewhere (another tab): reload to show what happened.
+      if (error.code === "invalid_status") {
+        void queryClient.invalidateQueries({ queryKey: messagesKey });
+      }
       toast.error(decision === "confirm" ? "Couldn't confirm" : "Couldn't cancel", {
         description: error.message,
       });

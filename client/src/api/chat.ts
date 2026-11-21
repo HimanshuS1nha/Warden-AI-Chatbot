@@ -11,6 +11,7 @@ import type {
   ChatMessagePage,
   Message,
   MessagePage,
+  Rating,
   Thread,
   ThreadPage,
 } from "@/types/chat";
@@ -38,8 +39,8 @@ export const threadsInfiniteQueryOptions = infiniteQueryOptions({
   getNextPageParam: (lastPage) => lastPage.next,
 });
 
-// A saved message as the chat page shows it. Tool activity and confirmation
-// cards only come from the live stream, so saved messages have none.
+// A saved message as the chat page shows it. Tool activity only comes from
+// the live stream, so saved messages have none.
 export function toChatMessage(message: Message): ChatMessage {
   if (message.role === "user") {
     return {
@@ -58,7 +59,13 @@ export function toChatMessage(message: Message): ChatMessage {
     error: null,
     tools: [],
     citations: message.citations,
-    action: null,
+    action: message.action && {
+      id: message.action.id,
+      type: message.action.action_type,
+      summary: message.action.summary,
+      status: message.action.status,
+    },
+    feedback: message.feedback,
   };
 }
 
@@ -87,3 +94,13 @@ export const messagesInfiniteQueryOptions = (threadId: string) =>
     // A 404 (unknown or someone else's thread) won't fix itself.
     retry: (failureCount, error) => !isClientError(error) && failureCount < 2,
   });
+
+// Rate one of the assistant's replies, replacing any earlier rating; null
+// removes the rating.
+export async function rateMessage(messageId: string, rating: Rating | null): Promise<void> {
+  if (rating === null) {
+    await axios.delete(API_ROUTES.chat.feedbackFor(messageId));
+  } else {
+    await axios.post(API_ROUTES.chat.feedback, { message_id: messageId, rating });
+  }
+}

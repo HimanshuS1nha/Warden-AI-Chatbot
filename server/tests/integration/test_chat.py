@@ -3,7 +3,9 @@ graph, tools, services and database, with a scripted model and an in-memory
 checkpointer instead of Gemini and Postgres checkpoints."""
 
 import json
+import uuid
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,7 +14,7 @@ import pytest
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from tests.agent_fakes import ScriptedChatModel, call
@@ -27,6 +29,7 @@ from warden.graph.streaming import ERROR_MESSAGE
 from warden.main import app
 from warden.models import (
     AuditLogModel,
+    ChatFeedbackModel,
     ChatMessageModel,
     EmployeeModel,
     LeaveRequestModel,
@@ -343,7 +346,14 @@ async def test_a_write_tool_streams_a_confirmation_card_and_changes_nothing(
     [done] = named(events, "done")
     history = (await client.get(f"/api/chat/threads/{thread_id}/messages")).json()
     reply = history["messages"][0]
-    assert (reply["id"], reply["pending_action_id"]) == (done["message_id"], card["action_id"])
+    assert reply["id"] == done["message_id"]
+    assert reply["action"] == {
+        "id": card["action_id"],
+        "action_type": "apply_leave",
+        "summary": action.summary,
+        "status": "pending",
+        "expires_at": reply["action"]["expires_at"],
+    }
 
 
 async def test_only_one_write_is_proposed_per_message(
@@ -625,6 +635,171 @@ async def test_an_expired_action_cant_be_confirmed(
     assert (expired.outcome, expired.details["reason"]) == ("denied", "action_expired")
     again = await client.post(f"/api/chat/actions/{action_id}/confirm")
     assert (again.status_code, again.json()["code"]) == (422, "invalid_status")
+
+
+# History: confirmation cards and feedback
+
+
+async def add_reply(
+    db: AsyncSession,
+    me: EmployeeModel,
+    thread_id: str,
+    action_status: PendingActionStatus | None = None,
+    expires_in: timedelta = timedelta(minutes=5),
+) -> ChatMessageModel:
+    """An assistant reply saved straight to the database, proposing an action
+    in `action_status` if one is given."""
+    action = None
+    if action_status is not None:
+        action = PendingActionModel(
+            employee_id=me.id,
+            thread_id=uuid.UUID(thread_id),
+            action_type="apply_leave",
+            params={},
+            summary="Casual leave, Mon 1 Dec, 1 day. Balance after: 7",
+            status=action_status,
+            expires_at=datetime.now(UTC) + expires_in,
+        )
+        db.add(action)
+        await db.flush()
+    message = ChatMessageModel(
+        thread_id=uuid.UUID(thread_id),
+        role=MessageRole.ASSISTANT,
+        content="Here you go.",
+        pending_action_id=action.id if action else None,
+    )
+    db.add(message)
+    await db.flush()
+    return message
+
+
+async def history(client: AsyncClient, thread_id: str) -> list[dict[str, Any]]:
+    response = await client.get(f"/api/chat/threads/{thread_id}/messages")
+    assert response.status_code == 200, response.text
+    messages: list[dict[str, Any]] = response.json()["messages"]
+    return messages
+
+
+@contextmanager
+def count_queries(connection: AsyncConnection) -> Iterator[list[str]]:
+    statements: list[str] = []
+
+    def record(*args: Any) -> None:
+        statements.append(args[2])  # (conn, cursor, statement, ...)
+
+    sync = connection.sync_connection
+    assert sync is not None
+    event.listen(sync, "before_cursor_execute", record)
+    try:
+        yield statements
+    finally:
+        event.remove(sync, "before_cursor_execute", record)
+
+
+async def test_history_shows_each_cards_current_status(
+    client: AsyncClient, db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    me = await make_employee()
+    await login(client, me)
+    thread_id = await new_thread(client)
+    pending = await add_reply(db, me, thread_id, PendingActionStatus.PENDING)
+    timed_out = await add_reply(
+        db, me, thread_id, PendingActionStatus.PENDING, expires_in=timedelta(seconds=-1)
+    )
+    await add_reply(db, me, thread_id, PendingActionStatus.CONFIRMED)
+    await add_reply(db, me, thread_id)
+
+    messages = await history(client, thread_id)
+
+    statuses = [m["action"] and m["action"]["status"] for m in messages]
+    assert statuses == [None, "confirmed", "expired", "pending"]
+    assert messages[-1]["action"]["id"] == str(pending.pending_action_id)
+    assert messages[-1]["action"]["summary"].startswith("Casual leave, Mon 1 Dec")
+    # Reported expired, but only a click marks the row.
+    action = await db.get(PendingActionModel, timed_out.pending_action_id)
+    assert action is not None and action.status == PendingActionStatus.PENDING
+
+
+async def test_history_takes_the_same_queries_however_many_cards_and_ratings(
+    client: AsyncClient,
+    connection: AsyncConnection,
+    db: AsyncSession,
+    make_employee: MakeEmployee,
+) -> None:
+    me = await make_employee()
+    await login(client, me)
+    thread_id = await new_thread(client)
+    await add_reply(db, me, thread_id, PendingActionStatus.PENDING)
+    with count_queries(connection) as one_card:
+        await history(client, thread_id)
+
+    for _ in range(4):
+        reply = await add_reply(db, me, thread_id, PendingActionStatus.CONFIRMED)
+        await client.post("/api/chat/feedback", json={"message_id": str(reply.id), "rating": 1})
+    with count_queries(connection) as five_cards:
+        messages = await history(client, thread_id)
+
+    assert len(messages) == 5
+    assert len(five_cards) == len(one_card)
+
+
+async def test_a_reply_can_be_rated_rerated_and_cleared(
+    client: AsyncClient, db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    me = await make_employee()
+    await login(client, me)
+    thread_id = await new_thread(client)
+    reply = await add_reply(db, me, thread_id)
+    message_id = str(reply.id)
+
+    up = await client.post("/api/chat/feedback", json={"message_id": message_id, "rating": 1})
+    down = await client.post(
+        "/api/chat/feedback",
+        json={"message_id": message_id, "rating": -1, "comment": "  Wrong number.  "},
+    )
+
+    assert up.json() == {"message_id": message_id, "rating": 1, "comment": None}
+    assert down.json() == {"message_id": message_id, "rating": -1, "comment": "Wrong number."}
+    rows = (await db.scalars(select(ChatFeedbackModel))).all()
+    assert [(r.employee_id, r.rating) for r in rows] == [(me.id, -1)]
+    assert (await history(client, thread_id))[0]["feedback"] == -1
+
+    cleared = await client.delete(f"/api/chat/feedback/{message_id}")
+    again = await client.delete(f"/api/chat/feedback/{message_id}")
+
+    assert (cleared.status_code, again.status_code) == (204, 204)
+    assert (await history(client, thread_id))[0]["feedback"] is None
+
+
+@pytest.mark.security
+async def test_only_your_own_assistant_replies_can_be_rated(
+    client: AsyncClient, db: AsyncSession, make_employee: MakeEmployee
+) -> None:
+    owner, intruder = await make_employee(), await make_employee()
+    await login(client, owner)
+    thread_id = await new_thread(client)
+    reply = await add_reply(db, owner, thread_id)
+    question = ChatMessageModel(thread_id=uuid.UUID(thread_id), role=MessageRole.USER, content="Hi")
+    db.add(question)
+    await db.flush()
+
+    own_question = await client.post(
+        "/api/chat/feedback", json={"message_id": str(question.id), "rating": 1}
+    )
+    unknown = await client.post(
+        "/api/chat/feedback", json={"message_id": str(uuid.uuid4()), "rating": 1}
+    )
+    zero = await client.post("/api/chat/feedback", json={"message_id": str(reply.id), "rating": 0})
+    await login(client, intruder)
+    rate = await client.post("/api/chat/feedback", json={"message_id": str(reply.id), "rating": -1})
+    clear = await client.delete(f"/api/chat/feedback/{reply.id}")
+
+    assert (own_question.status_code, own_question.json()["code"]) == (422, "invalid_input")
+    assert (unknown.status_code, unknown.json()["code"]) == (404, "not_found")
+    assert zero.status_code == 422
+    assert (rate.status_code, rate.json()["code"]) == (404, "not_found")
+    assert (clear.status_code, clear.json()["code"]) == (404, "not_found")
+    assert await db.scalar(select(ChatFeedbackModel.id)) is None
 
 
 # Unanswered policy questions

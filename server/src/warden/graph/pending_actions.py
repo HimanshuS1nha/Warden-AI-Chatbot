@@ -50,6 +50,15 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def visible_status(action: PendingActionModel, now: datetime) -> PendingActionStatus:
+    """The status to show on the card. A pending action past its expiry is
+    expired, though the row only says so once someone clicks it (`_claim`
+    marks it then)."""
+    if action.status == PendingActionStatus.PENDING and action.expires_at <= now:
+        return PendingActionStatus.EXPIRED
+    return action.status
+
+
 @dataclass(frozen=True)
 class ConfirmOutcome:
     """What happened when the user clicked Confirm."""

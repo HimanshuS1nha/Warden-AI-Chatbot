@@ -22,6 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useChatScroll } from "@/hooks/use-chat-scroll";
 import { useChatStream } from "@/hooks/use-chat-stream";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import { useMessageFeedback } from "@/hooks/use-message-feedback";
 import { getErrorMessage } from "@/lib/api-error";
 
 import { messagesInfiniteQueryOptions } from "@/api/chat";
@@ -50,6 +51,7 @@ function ChatView({ threadId }: { threadId: string }) {
     fetchNextPage,
   } = useInfiniteQuery(messagesInfiniteQueryOptions(threadId));
   const chat = useChatStream(threadId);
+  const rate = useMessageFeedback(threadId);
 
   // Pages are newest first; the log reads oldest first, top to bottom.
   const messages = (data?.pages.flatMap((page) => page.messages) ?? []).toReversed();
@@ -145,6 +147,7 @@ function ChatView({ threadId }: { threadId: string }) {
                     pinToBottom();
                     void chat.cancelAction(actionId);
                   }}
+                  onRate={rate}
                   busy={busy}
                   disabled={chat.isStreaming}
                 />

@@ -30,13 +30,29 @@ export type MessageRole = "user" | "assistant";
 export type PendingActionType = "apply_leave" | "cancel_leave" | "approve_leave" | "reject_leave";
 export type PendingActionStatus = "pending" | "confirmed" | "cancelled" | "expired" | "failed";
 
-// Mirror MessageResponse and MessagePage in server/src/warden/schemas/chat.py.
+// 1 = thumbs up, -1 = thumbs down.
+export type Rating = 1 | -1;
+
+// Mirror MessageAction, MessageResponse and MessagePage in
+// server/src/warden/schemas/chat.py.
+export type MessageAction = {
+  id: string;
+  action_type: PendingActionType;
+  summary: string;
+  // As it is now; a pending action past expires_at comes back expired.
+  status: PendingActionStatus;
+  expires_at: string;
+};
+
 export type Message = {
   id: string;
   role: MessageRole;
   content: string;
   citations: Citation[];
-  pending_action_id: string | null;
+  // On a reply that proposed a change.
+  action: MessageAction | null;
+  // The current user's rating of this reply.
+  feedback: Rating | null;
   created_at: string;
 };
 
@@ -81,6 +97,7 @@ export type AssistantChatMessage = {
   tools: ToolCall[];
   citations: Citation[];
   action: PendingAction | null;
+  feedback: Rating | null;
 };
 
 export type ChatMessage = UserChatMessage | AssistantChatMessage;
