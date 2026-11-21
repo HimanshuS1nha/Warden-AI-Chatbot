@@ -5,9 +5,14 @@ import { axios } from "@/lib/axios";
 import { API_ROUTES } from "@/constants/api-routes";
 import { QUERY_KEYS } from "@/constants/query-keys";
 
-import type { ThreadPage } from "@/types/chat";
+import type { Thread, ThreadPage } from "@/types/chat";
 
 const THREADS_PAGE_SIZE = 30;
+
+export async function createThread(): Promise<Thread> {
+  const { data } = await axios.post<Thread>(API_ROUTES.chat.threads);
+  return data;
+}
 
 export async function getThreads(before: string | null): Promise<ThreadPage> {
   const { data } = await axios.get<ThreadPage>(API_ROUTES.chat.threads, {

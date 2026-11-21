@@ -1,8 +1,8 @@
-import { PlusIcon, ShieldCheckIcon } from "lucide-react";
+import { ShieldCheckIcon } from "lucide-react";
 
 import { NavUser } from "@/components/nav-user";
+import { NewChatButton } from "@/components/new-chat-button";
 import { ThreadList } from "@/components/thread-list";
-import { Button } from "@/components/ui/button";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader } from "@/components/ui/sidebar";
 
 export function AppSidebar() {
@@ -15,11 +15,7 @@ export function AppSidebar() {
           </span>
           Warden
         </div>
-        {/* TODO(7.10): create a thread. */}
-        <Button variant="outline" className="w-full justify-start">
-          <PlusIcon />
-          New chat
-        </Button>
+        <NewChatButton />
       </SidebarHeader>
 
       <SidebarContent>

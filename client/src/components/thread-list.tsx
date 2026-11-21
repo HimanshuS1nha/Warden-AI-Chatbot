@@ -1,4 +1,5 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { Link, useParams } from "@tanstack/react-router";
 import { MessageSquareIcon, RotateCwIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 
@@ -11,6 +12,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
+  useSidebar,
 } from "@/components/ui/sidebar";
 
 import { getErrorMessage } from "@/lib/api-error";
@@ -28,6 +30,9 @@ export function ThreadList() {
     isFetchingNextPage,
     fetchNextPage,
   } = useInfiniteQuery(threadsInfiniteQueryOptions);
+  // Undefined outside a chat page.
+  const { threadId: activeThreadId } = useParams({ strict: false });
+  const { isMobile, setOpenMobile } = useSidebar();
 
   // Load the next page when the end of the list scrolls into view.
   const sentinelRef = useRef<HTMLLIElement>(null);
@@ -66,8 +71,12 @@ export function ThreadList() {
           <SidebarMenu>
             {threads.map((thread) => (
               <SidebarMenuItem key={thread.id}>
-                {/* TODO(7.10): open the thread. */}
-                <SidebarMenuButton>
+                <SidebarMenuButton
+                  isActive={thread.id === activeThreadId}
+                  render={<Link to="/chat/$threadId" params={{ threadId: thread.id }} />}
+                  // On phones the sidebar is an overlay; close it to show the chat.
+                  onClick={() => isMobile && setOpenMobile(false)}
+                >
                   <MessageSquareIcon />
                   <span className={thread.title ? undefined : "text-muted-foreground italic"}>
                     {thread.title ?? "New chat"}
