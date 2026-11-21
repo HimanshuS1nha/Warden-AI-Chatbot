@@ -4,7 +4,7 @@ An HR assistant for employees: it answers policy questions with citations, looks
 
 ## Demo Video
 
-▶️ [Watch](https://www.youtube.com/watch?v=ybvmJk5_PjU)
+▶️ [Watch](https://www.youtube.com/watch?v=lx77ZrjojeM)
 
 
 ## Screenshots
