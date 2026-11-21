@@ -63,6 +63,18 @@ class FakeSparseEncoder:
         return SparseVector(indices=unique, values=[1.0] * len(unique))
 
 
+class FakeReranker:
+    """Scores a passage by how many distinct query words it contains."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+
+    async def rerank(self, query: str, passages: Sequence[str]) -> list[float]:
+        self.calls.append((query, list(passages)))
+        words = set(_WORD.findall(query.lower()))
+        return [float(len(words & set(_WORD.findall(p.lower())))) for p in passages]
+
+
 class WhitespaceTokenCounter:
     """One token per whitespace-separated word."""
 

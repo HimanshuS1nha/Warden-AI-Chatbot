@@ -34,9 +34,10 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from warden.core.config import Settings
 from warden.rag.chunking import Chunk
 from warden.rag.embeddings import Vectors
-from warden.rag.sparse import SparseEncoder
+from warden.rag.sparse import Bm25Encoder, SparseEncoder
 
 DENSE = "dense"
 SPARSE = "bm25"
@@ -102,10 +103,36 @@ class PolicyIndex:
             if not await self.client.collection_exists(self.collection):
                 await self._create()
                 return
+        except (ResponseHandlingException, UnexpectedResponse) as exc:
+            raise PolicyIndexError(_unreachable(exc)) from exc
+        await self._check_dimensions()
+
+    async def verify(self) -> int:
+        """Check the collection is ready to search and return its point
+        count. Fails if it's missing, empty, or built for another model."""
+        try:
+            exists = await self.client.collection_exists(self.collection)
+        except (ResponseHandlingException, UnexpectedResponse) as exc:
+            raise PolicyIndexError(_unreachable(exc)) from exc
+        if not exists:
+            raise PolicyIndexError(
+                f"Qdrant has no {self.collection!r} collection. "
+                "Run `uv run python -m warden.rag.ingest`."
+            )
+        await self._check_dimensions()
+        count = await self.count()
+        if count == 0:
+            raise PolicyIndexError(
+                f"Collection {self.collection!r} is empty. "
+                "Run `uv run python -m warden.rag.ingest`."
+            )
+        return count
+
+    async def _check_dimensions(self) -> None:
+        try:
             info = await self.client.get_collection(self.collection)
         except (ResponseHandlingException, UnexpectedResponse) as exc:
             raise PolicyIndexError(_unreachable(exc)) from exc
-
         vectors = info.config.params.vectors
         size = vectors[DENSE].size if isinstance(vectors, dict) and DENSE in vectors else None
         if size != self.dimensions:
@@ -181,6 +208,19 @@ class PolicyIndex:
         )
         result = await self.client.count(self.collection, count_filter=count_filter, exact=True)
         return result.count
+
+
+def build_index(
+    settings: Settings, client: AsyncQdrantClient, sparse: SparseEncoder | None = None
+) -> PolicyIndex:
+    """The index the settings describe. BM25 defaults to fastembed's, loaded
+    on first use."""
+    return PolicyIndex(
+        client,
+        settings.qdrant_collection,
+        dimensions=settings.embedding_dimensions,
+        sparse=sparse or Bm25Encoder(settings.models_dir),
+    )
 
 
 def _unreachable(exc: Exception) -> str:

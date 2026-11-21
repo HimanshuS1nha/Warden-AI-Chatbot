@@ -82,6 +82,8 @@ asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     # Tests use Qdrant's in-process mode, which ignores payload indexes.
     "ignore:Payload indexes have no effect in the local Qdrant:UserWarning",
+    # Tests that point the client at a closed port, on purpose.
+    "ignore:Failed to obtain server version:UserWarning",
 ]
 markers = [
     "integration: needs the Postgres test database",

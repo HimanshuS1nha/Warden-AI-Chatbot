@@ -16,8 +16,8 @@ from warden.core.config import Settings
 from warden.graph.agent import build_chat_model
 from warden.graph.checkpointer import open_checkpointer
 from warden.rag.embeddings import Embedder, build_embedding_client
-from warden.rag.retrievers import InMemoryRetriever, MinScoreRetriever, Retriever
-from warden.rag.store import ChunkStoreError
+from warden.rag.retrievers import Retriever
+from warden.rag.retrievers.factory import RetrieverUnavailable, open_retriever
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +27,8 @@ class AgentResources:
     checkpointer: BaseCheckpointSaver[str]
     # None without GEMINI_API_KEY: chat is unavailable, the rest of the app runs.
     chat_model: BaseChatModel | None
-    # None without the key or without a chunk store (run ingest): the agent
-    # works without policy search.
+    # None without the key, or when the configured search can't start (no
+    # index yet, Qdrant down): the agent works without policy search.
     retriever: Retriever | None
 
 
@@ -50,10 +50,8 @@ async def open_agent_resources(settings: Settings) -> AsyncIterator[AgentResourc
         )
         retriever: Retriever | None = None
         try:
-            store = InMemoryRetriever.load(settings.cache_dir, embedder)
-            logger.info("Loaded %d policy chunks for search", len(store))
-            retriever = MinScoreRetriever(store, settings.policy_min_score)
-        except ChunkStoreError as exc:
+            retriever = await stack.enter_async_context(open_retriever(settings, embedder))
+        except RetrieverUnavailable as exc:
             logger.warning("Policy search is disabled: %s", exc)
 
         yield AgentResources(

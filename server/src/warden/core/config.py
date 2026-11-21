@@ -55,11 +55,29 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(default=768, gt=0)
     # Gemini accepts at most 100 texts per request.
     embedding_batch_size: int = Field(default=100, gt=0, le=100)
-    # Policy search finds nothing when its best match scores below this
-    # (cosine similarity with the embedding model above). Measured on the
-    # demo documents: relevant questions score 0.70+, off-topic ones
-    # ("how to bake bread") 0.51-0.59. Change it with the embedding model.
+    # Which search the agent's policy tool runs:
+    #   memory        - in-process cosine search over the chunk store (baseline)
+    #   dense         - Qdrant, dense vectors only
+    #   hybrid        - Qdrant, dense and BM25 fused with RRF
+    #   hybrid_rerank - hybrid candidates reordered by a cross-encoder
+    retriever: Literal["memory", "dense", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
+    # For memory and dense: policy search finds nothing when its best match
+    # scores below this (cosine similarity with the embedding model above).
+    # Measured on the demo documents: relevant questions score 0.70+,
+    # off-topic ones ("how to bake bread") 0.51-0.59. Change it with the
+    # embedding model. Hybrid search has no threshold: RRF scores only rank.
     policy_min_score: float = Field(default=0.6, ge=0, le=1)
+
+    # A fastembed cross-encoder, for hybrid_rerank.
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    # Hybrid results the cross-encoder scores before the top k are kept.
+    rerank_candidates: int = Field(default=20, gt=0)
+    # For hybrid_rerank: policy search finds nothing when the best rerank
+    # score is below this. The scale is the cross-encoder's raw logits, so
+    # change it with the reranker model. Measured with MiniLM-L-6 on the demo
+    # documents: relevant questions score -0.6 and up ("can I accept a gift
+    # from a vendor" is the lowest), off-topic ones about -11.
+    rerank_min_score: float = -5.0
 
 
 @lru_cache

@@ -83,8 +83,13 @@ class Chunk:
     def embedding_text(self) -> str:
         """What gets embedded: the text with its document title and section,
         so a chunk that never names its topic can still match a query."""
-        header = f"{self.title}\n{self.section}" if self.section else self.title
-        return f"{header}\n\n{self.text}"
+        return headed_text(self.title, self.section, self.text)
+
+
+def headed_text(title: str, section: str, text: str) -> str:
+    """Chunk text under its document title and section heading."""
+    header = f"{title}\n{section}" if section else title
+    return f"{header}\n\n{text}"
 
 
 @dataclass(frozen=True, slots=True)

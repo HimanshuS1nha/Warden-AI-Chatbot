@@ -54,9 +54,8 @@ from warden.models import AccessLevel, DocumentModel, DocumentVersionModel, Docu
 from warden.rag.chunking import Chunk, DocumentInfo, HFTokenCounter, TokenCounter, chunk_blocks
 from warden.rag.cleaning import clean_blocks
 from warden.rag.embeddings import Embedder, EmbeddingError, EmbedTask, build_embedding_client
-from warden.rag.index import PolicyIndex, PolicyIndexError
+from warden.rag.index import PolicyIndex, PolicyIndexError, build_index
 from warden.rag.parsing import parse_document
-from warden.rag.sparse import Bm25Encoder
 from warden.rag.store import (
     read_version_chunks,
     store_dir,
@@ -439,15 +438,6 @@ async def _rebuild_store(session: AsyncSession, cache_dir: Path, embedder: Embed
     vectors = await embedder.embed([chunk.embedding_text for chunk in chunks], EmbedTask.DOCUMENT)
     write_store(store_dir(cache_dir), chunks, vectors, embedder.model_id)
     return len(chunks)
-
-
-def build_index(settings: Settings, client: AsyncQdrantClient) -> PolicyIndex:
-    return PolicyIndex(
-        client,
-        settings.qdrant_collection,
-        dimensions=settings.embedding_dimensions,
-        sparse=Bm25Encoder(settings.models_dir),
-    )
 
 
 async def _run(

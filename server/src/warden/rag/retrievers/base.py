@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from warden.models import AccessLevel, Role
+from warden.rag.chunking import headed_text
 
 # Which documents each role may retrieve. Employees see documents for
 # everyone, managers also see manager documents, HR sees everything.
@@ -36,9 +37,15 @@ class RetrievedChunk:
     section: str
     page: int | None
     text: str
-    # Higher is more relevant. The scale depends on the retriever (cosine
-    # similarity for dense search, a rerank score later).
+    # Higher is more relevant. The scale depends on the retriever: cosine
+    # similarity for dense search, an RRF score for hybrid search, the
+    # cross-encoder's score after reranking.
     score: float
+
+    @property
+    def headed_text(self) -> str:
+        """The text as it was embedded, with its title and section."""
+        return headed_text(self.title, self.section, self.text)
 
 
 class Retriever(Protocol):
