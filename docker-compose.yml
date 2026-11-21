@@ -1,0 +1,129 @@
+# The whole app: database, vector store, Redis, API server and web client.
+#
+#   cp .env.example .env     # set JWT_SECRET_KEY and GEMINI_API_KEY
+#   docker compose up --build
+#
+# Then open http://localhost:8080. The `setup` service migrates the
+# database, seeds the demo company on first run and ingests the policy
+# documents (skipped without GEMINI_API_KEY; unchanged documents are skipped
+# on later runs), before the server starts.
+#
+# For local development, run only the backing services with
+# docker-compose.dev.yml and the app on the host.
+
+name: warden
+
+x-server: &server
+  build: ./server
+  image: warden-server
+  environment:
+    ENV: prod
+    DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/warden
+    CHECKPOINTER_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/warden
+    REDIS_URL: redis://redis:6379/0
+    QDRANT_URL: http://qdrant:6333
+    FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+    JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env (at least 32 characters)}
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    LLM_MODEL: ${LLM_MODEL:-gemini-3.8-flash}
+    RETRIEVER: ${RETRIEVER:-hybrid_rerank}
+    LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-5}
+    CHAT_RATE_LIMIT: ${CHAT_RATE_LIMIT:-20}
+    REQUEST_RATE_LIMIT: ${REQUEST_RATE_LIMIT:-120}
+    SEED_PASSWORD: ${SEED_PASSWORD:-warden-demo}
+  volumes:
+    # Embedding cache, chunk store and uploaded documents.
+    - server-data:/data
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: warden
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "warden"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.20.2
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      # The image has no curl or wget, so ask /readyz over bash's /dev/tcp.
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.0\r\n\r\n" >&3 && grep -q "200 OK" <&3'
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Runs once per `up` and exits. Each step is safe to repeat.
+  setup:
+    <<: *server
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        alembic upgrade head
+        python -m warden.scripts.seed --if-empty
+        if [ -n "$$GEMINI_API_KEY" ]; then
+          python -m warden.rag.ingest || echo "Ingest failed: policy search stays off until it succeeds."
+        else
+          echo "GEMINI_API_KEY is not set: skipping ingest; chat stays off."
+        fi
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    <<: *server
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    restart: unless-stopped
+
+  client:
+    build: ./client
+    ports:
+      - "${WARDEN_PORT:-8080}:8080"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  server-data:

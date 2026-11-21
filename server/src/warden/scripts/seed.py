@@ -1,7 +1,8 @@
 """Fill the database with a fictional company for development and the demo.
 
-    uv run python -m warden.scripts.seed            # refuses if employees exist
-    uv run python -m warden.scripts.seed --reset    # wipe HR data and reseed
+    uv run python -m warden.scripts.seed              # refuses if employees exist
+    uv run python -m warden.scripts.seed --reset      # wipe HR data and reseed
+    uv run python -m warden.scripts.seed --if-empty   # seed only a new database
 
 `build_company(now)` generates every row in memory, then `seed()` writes them
 in one transaction, so a failed run leaves the database as it was. Random
@@ -867,7 +868,17 @@ async def seed(
         await session.execute(insert(model), rows)
 
 
-async def main(reset: bool) -> None:
+async def main(reset: bool, if_empty: bool = False) -> None:
+    if if_empty:
+        try:
+            async with SessionLocal() as session:
+                seeded = await session.scalar(select(func.count()).select_from(EmployeeModel))
+        finally:
+            await engine.dispose()
+        if seeded:
+            print("The database already has employees; not seeding.")
+            return
+
     data = build_company(datetime.now(co.TIMEZONE))
     hashed_password = password_hash.hash(SEED_PASSWORD)
     try:
@@ -887,9 +898,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--reset",
         action="store_true",
         help="delete employees and all HR data first (chat threads and sessions go with them)",
     )
-    asyncio.run(main(parser.parse_args().reset))
+    mode.add_argument(
+        "--if-empty",
+        action="store_true",
+        help="seed only when there are no employees, and exit quietly otherwise "
+        "(for container startup)",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(args.reset, args.if_empty))

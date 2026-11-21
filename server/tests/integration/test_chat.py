@@ -483,7 +483,8 @@ async def test_only_one_write_is_proposed_per_message(
     refused = next(
         m for m in model.calls[-1].messages if getattr(m, "tool_call_id", "") == "call_2"
     )
-    assert refused.content == ONE_PROPOSAL
+    # What the model read, so wrapped as a tool result.
+    assert refused.text == f'<tool_result tool="apply_for_leave">\n{ONE_PROPOSAL}\n</tool_result>'
     assert len(named(events, "confirmation_required")) == 1
     actions = (await db.scalars(select(PendingActionModel))).all()
     assert len(actions) == 1

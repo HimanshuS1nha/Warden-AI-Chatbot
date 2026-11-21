@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from warden.core.dependencies import CurrentUser
 from warden.graph.graph import proposed_action
+from warden.graph.prompts import user_message
 from warden.graph.state import AgentState
 from warden.models import ChatThreadModel, UnansweredReason
 from warden.rag.citations import resolve_citations, sources_from_artifacts
@@ -138,6 +139,9 @@ class ChatTurn:
     # the user: it isn't a question that can go unanswered.
     from_user: bool = True
 
+    def _model_input(self) -> str:
+        return user_message(self.message) if self.from_user else self.message
+
     async def events(self) -> AsyncIterator[str]:
         reply: AIMessage | None = None
         tool_results: list[ToolMessage] = []
@@ -150,7 +154,7 @@ class ChatTurn:
         }
         try:
             async for item in self.graph.astream(
-                {"messages": [HumanMessage(content=self.message)]},
+                {"messages": [HumanMessage(content=self._model_input())]},
                 config,
                 stream_mode=["messages", "updates"],
             ):
