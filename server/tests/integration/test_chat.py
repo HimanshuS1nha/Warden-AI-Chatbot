@@ -2,6 +2,7 @@
 graph, tools, services and database, with a scripted model and an in-memory
 checkpointer instead of Gemini and Postgres checkpoints."""
 
+import asyncio
 import json
 import uuid
 from collections.abc import Callable, Iterator
@@ -12,7 +13,8 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
@@ -25,7 +27,7 @@ from tests.rag_fakes import FakeEmbeddingClient, no_sleep
 from tests.unit.test_policy_tool import CHUNKS
 from warden.graph.graph import ONE_PROPOSAL
 from warden.graph.resources import AgentResources
-from warden.graph.streaming import ERROR_MESSAGE
+from warden.graph.streaming import ERROR_MESSAGE, UNFINISHED_REPLY
 from warden.main import app
 from warden.models import (
     AuditLogModel,
@@ -289,6 +291,87 @@ async def test_a_failed_turn_sends_an_error_and_keeps_the_question(
 
     assert events == [("error", {"message": ERROR_MESSAGE})]
     assert await saved_messages(db) == [(MessageRole.USER, "Hello?")]
+
+
+async def test_a_failed_turn_is_closed_so_the_next_message_doesnt_answer_it(
+    client: AsyncClient, make_employee: MakeEmployee, use_agent: Callable[..., None]
+) -> None:
+    use_agent(scripted())  # The first turn fails.
+    await login(client, await make_employee())
+    thread_id = await new_thread(client)
+    await send(client, thread_id, "Hello?")
+
+    model = scripted("Vikram Desai.")
+    use_agent(model)
+    await send(client, thread_id, "Who is my manager?")
+
+    seen = [m.content for m in model.calls[-1].messages[1:]]
+    assert seen == ["Hello?", UNFINISHED_REPLY, "Who is my manager?"]
+
+
+class StallingChatModel(ScriptedChatModel):
+    """Replies from the script, then never finishes its next reply, like a
+    model still writing when the user presses Stop."""
+
+    stall_after: int = 0
+    stalled: Any = None
+
+    async def _stall_when_scripted_out(self) -> None:
+        if len(self.calls) >= self.stall_after:
+            self.stalled.set()
+            await asyncio.Future()  # Never resolves.
+
+    async def _agenerate(
+        self, messages: list[BaseMessage], stop: list[str] | None = None, *_: Any, **kwargs: Any
+    ) -> ChatResult:
+        await self._stall_when_scripted_out()
+        return self._generate(messages, stop, **kwargs)
+
+    async def _astream(
+        self, messages: list[BaseMessage], stop: list[str] | None = None, *_: Any, **kwargs: Any
+    ) -> Any:
+        await self._stall_when_scripted_out()
+        for chunk in self._stream(messages, stop, **kwargs):
+            yield chunk
+
+
+# Cancelling the request tears down LangGraph's running node, which Python
+# reports as an ignored GeneratorExit when it's collected.
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+async def test_a_stopped_reply_is_closed_so_the_next_message_doesnt_answer_it(
+    client: AsyncClient, make_employee: MakeEmployee, use_agent: Callable[..., None]
+) -> None:
+    slow = StallingChatModel(
+        messages=iter([AIMessage(content="", tool_calls=[call("get_my_leave_balance")])]),
+        stall_after=1,
+        stalled=asyncio.Event(),
+    )
+    use_agent(slow)
+    await login(client, await make_employee())
+    thread_id = await new_thread(client)
+
+    # The balance tool runs, then the user stops the reply (the client
+    # disconnects) while the model is still writing.
+    request = asyncio.create_task(send(client, thread_id, "Summarise my leave"))
+    await asyncio.wait_for(slow.stalled.wait(), timeout=5)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+
+    model = scripted("Vikram Desai.")
+    use_agent(model)
+    events = await send(client, thread_id, "Who is my manager?")
+
+    assert named(events, "done")[0]["content"] == "Vikram Desai."
+    seen = model.calls[-1].messages[1:]
+    assert [type(m) for m in seen] == [
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+        AIMessage,
+        HumanMessage,
+    ]
+    assert [seen[0].content, seen[-2].content] == ["Summarise my leave", UNFINISHED_REPLY]
 
 
 # Write proposals

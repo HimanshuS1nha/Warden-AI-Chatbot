@@ -21,6 +21,7 @@ Events, in the order they can arrive:
 - `error` {message}: the turn failed. Nothing more follows.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -28,8 +29,15 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+import anyio
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    AnyMessage,
+    HumanMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
@@ -44,6 +52,10 @@ logger = logging.getLogger(__name__)
 
 POLICY_TOOL = "search_policies"
 ERROR_MESSAGE = "Something went wrong while answering. Please try again."
+
+# What the agent remembers in place of a reply it never finished.
+UNFINISHED_TOOL = "Not run: the reply was stopped before this tool ran."
+UNFINISHED_REPLY = "(This reply was stopped before it was finished.)"
 
 
 def sse(event: str, data: dict[str, Any]) -> str:
@@ -68,6 +80,41 @@ def unanswered_reason(
     if not citations:
         return UnansweredReason.LOW_CONFIDENCE
     return None
+
+
+def closing_messages(messages: Sequence[AnyMessage]) -> list[AnyMessage]:
+    """What closes a turn that ended without a reply, so the agent doesn't
+    try to answer it again with the user's next message.
+
+    A turn ends without a reply when the user stops it or it fails. The
+    agent's memory then ends with the question, or with tool calls that
+    never got results (which the model would refuse). This answers each
+    open tool call and adds a reply saying it was stopped. Empty when the
+    last turn has its reply.
+    """
+    if not messages:
+        return []
+    last = messages[-1]
+    if isinstance(last, AIMessage) and not last.tool_calls:
+        return []
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    closing: list[AnyMessage] = []
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            break
+        if isinstance(message, AIMessage):
+            closing.extend(
+                ToolMessage(
+                    content=UNFINISHED_TOOL,
+                    tool_call_id=call["id"],
+                    name=call["name"],
+                    status="error",
+                )
+                for call in message.tool_calls
+                if call["id"] not in answered
+            )
+    closing.append(AIMessage(content=UNFINISHED_REPLY))
+    return closing
 
 
 @dataclass
@@ -154,9 +201,26 @@ class ChatTurn:
             reason = unanswered_reason(searches, citations) if self.from_user else None
             if reason is not None:
                 await self.chat.record_unanswered(self.user, self.message, reason)
+        except (asyncio.CancelledError, GeneratorExit):
+            # The client went away: the user pressed Stop or left the page.
+            # Shielded, since every await in a cancelled scope is cancelled too.
+            with anyio.CancelScope(shield=True):
+                await self._close_unfinished_turn(config)
+            raise
         except Exception:
             logger.exception("Chat turn failed in thread %s", self.thread.id)
+            await self._close_unfinished_turn(config)
             yield sse("error", {"message": ERROR_MESSAGE})
             return
 
         yield sse("done", {"message_id": str(saved.id), "content": content})
+
+    async def _close_unfinished_turn(self, config: RunnableConfig) -> None:
+        """Adds `closing_messages` to the agent's memory of the thread."""
+        try:
+            state = await self.graph.aget_state(config)
+            closing = closing_messages(state.values.get("messages", []))
+            if closing:
+                await self.graph.aupdate_state(config, {"messages": closing}, as_node="agent")
+        except Exception:
+            logger.exception("Couldn't close the unfinished turn in thread %s", self.thread.id)

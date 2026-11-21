@@ -2,11 +2,18 @@ import uuid
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 
+from tests.agent_fakes import call
 from tests.rag_fakes import FakeEmbeddingClient, no_sleep
 from tests.unit.test_policy_tool import CHUNKS
-from warden.graph.streaming import sse, unanswered_reason
+from warden.graph.streaming import (
+    UNFINISHED_REPLY,
+    UNFINISHED_TOOL,
+    closing_messages,
+    sse,
+    unanswered_reason,
+)
 from warden.models import AccessLevel, UnansweredReason
 from warden.rag.embeddings import Embedder, EmbedTask
 from warden.rag.retrievers import InMemoryRetriever, MinScoreRetriever, SearchFilters
@@ -66,3 +73,40 @@ async def test_min_score_returns_nothing_when_the_best_match_is_weak(tmp_path: P
     # The weaker matches stay when the best one passes.
     assert [c.chunk_id for c in at_best] == [best.chunk_id] + [c.chunk_id for c in rest]
     assert above_best == []
+
+
+def summary(messages: list[AnyMessage]) -> list[tuple[str, str]]:
+    return [
+        (m.type, m.tool_call_id if isinstance(m, ToolMessage) else str(m.content)) for m in messages
+    ]
+
+
+def test_a_finished_turn_needs_no_closing() -> None:
+    assert closing_messages([]) == []
+    assert closing_messages([HumanMessage("Hi"), AIMessage("Hello.")]) == []
+
+
+def test_an_unanswered_question_gets_a_stopped_reply() -> None:
+    messages: list[AnyMessage] = [
+        HumanMessage("Hi"),
+        AIMessage("Hello."),
+        HumanMessage("Summarise"),
+    ]
+    assert summary(closing_messages(messages)) == [("ai", UNFINISHED_REPLY)]
+
+
+def test_open_tool_calls_get_results_before_the_stopped_reply() -> None:
+    # An earlier turn's calls are answered; this turn's second call isn't.
+    messages: list[AnyMessage] = [
+        HumanMessage("Hi"),
+        AIMessage("", tool_calls=[call("get_my_manager", "old")]),
+        ToolMessage("Vikram", tool_call_id="old"),
+        AIMessage("Vikram."),
+        HumanMessage("Summarise"),
+        AIMessage("", tool_calls=[call("search_policies", "a"), call("search_policies", "b")]),
+        ToolMessage("...", tool_call_id="a"),
+    ]
+    closing = closing_messages(messages)
+    assert summary(closing) == [("tool", "b"), ("ai", UNFINISHED_REPLY)]
+    assert isinstance(closing[0], ToolMessage)
+    assert (closing[0].content, closing[0].status) == (UNFINISHED_TOOL, "error")
