@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     # Vector store for policy chunks. 6333 is Qdrant's HTTP port.
     qdrant_url: str = "http://localhost:6333"
+    qdrant_collection: str = "policy_chunks"
 
     jwt_secret_key: str = Field(min_length=32)
     jwt_algorithm: str = "HS256"
@@ -36,6 +37,8 @@ class Settings(BaseSettings):
     documents_dir: Path = Path("documents")
     # Embeddings cache and chunk store. Safe to delete: ingest rebuilds it.
     cache_dir: Path = Path(".cache")
+    # Local models (BM25, reranker), downloaded on first use.
+    models_dir: Path = Path(".cache/models")
 
     # One key per provider, shared by everything that calls it: embeddings
     # and the agent's chat model.

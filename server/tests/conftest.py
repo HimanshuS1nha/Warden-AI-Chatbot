@@ -28,3 +28,25 @@ os.environ["CHECKPOINTER_DATABASE_URL"] = (
     .set(drivername="postgresql")
     .render_as_string(hide_password=False)
 )
+
+
+# Fixtures shared by unit and integration tests. Imported after the
+# environment is set, like everything else from warden.
+
+from collections.abc import AsyncIterator  # noqa: E402
+
+import pytest  # noqa: E402
+from qdrant_client import AsyncQdrantClient  # noqa: E402
+
+from tests.rag_fakes import DIMENSIONS, FakeSparseEncoder  # noqa: E402
+from warden.rag.index import PolicyIndex  # noqa: E402
+
+
+@pytest.fixture
+async def policy_index() -> AsyncIterator[PolicyIndex]:
+    """An empty collection in Qdrant's in-process mode: same API, no server."""
+    client = AsyncQdrantClient(location=":memory:")
+    index = PolicyIndex(client, "test_chunks", dimensions=DIMENSIONS, sparse=FakeSparseEncoder())
+    await index.ensure_collection()
+    yield index
+    await client.close()

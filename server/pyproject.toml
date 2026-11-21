@@ -11,6 +11,7 @@ dependencies = [
     "asyncpg>=0.32.0",
     "faker>=40.54.0",
     "fastapi[standard]>=0.162.7",
+    "fastembed>=0.9.1",
     "google-genai>=3.5.0",
     "langchain>=1.5.2",
     "langchain-core>=1.8.3",
@@ -25,6 +26,7 @@ dependencies = [
     "pymupdf>=2.1",
     "python-docx>=1.2.0",
     "pyyaml>=6.0.3",
+    "qdrant-client>=1.20.0",
     "redis>=8.1.0",
     "sqlalchemy[asyncio]>=2.1.8",
     "structlog>=26.1.0",
@@ -77,6 +79,10 @@ testpaths = ["tests"]
 addopts = ["--strict-markers"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # Tests use Qdrant's in-process mode, which ignores payload indexes.
+    "ignore:Payload indexes have no effect in the local Qdrant:UserWarning",
+]
 markers = [
     "integration: needs the Postgres test database",
     "security: access control and attack tests",

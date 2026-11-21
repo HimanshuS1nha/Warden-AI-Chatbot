@@ -76,9 +76,11 @@ class GeminiEmbeddingClient:
         config = genai_types.EmbedContentConfig(
             task_type=self._TASK_TYPES[task], output_dimensionality=self._dimensions
         )
+        # Annotated so the list takes the SDK's element type, not list[str].
+        contents: list[genai_types.PartUnion] = list(texts)
         try:
             response = await self._client.aio.models.embed_content(
-                model=self._model, contents=list(texts), config=config
+                model=self._model, contents=contents, config=config
             )
         except genai_errors.APIError as exc:
             if exc.code == 429 or exc.code >= 500:

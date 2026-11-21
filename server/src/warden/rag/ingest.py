@@ -1,18 +1,28 @@
 """Index the policy documents listed in the manifest.
 
-    uv run python -m warden.rag.ingest           # index new and changed versions
-    uv run python -m warden.rag.ingest --force   # re-parse every version
+    uv run python -m warden.rag.ingest             # index new and changed versions
+    uv run python -m warden.rag.ingest --force     # re-parse every version
+    uv run python -m warden.rag.ingest --rebuild   # recreate the Qdrant collection
 
 For each version in `documents/manifest.yaml`: hash the file and skip it if
 Postgres already has it `ready` with the same hash and its chunk file is in
 the cache. Otherwise parse, clean, chunk and embed it, save its chunks, and
 mark it `ready`. A version that fails is marked `failed` and the run carries
-on with the rest. Each document's highest ready version becomes its active
-version.
+on with the rest.
 
-Then the chunk store is rewritten with the chunks and vectors of every active
-version, for `InMemoryRetriever`. Vectors come from the embeddings cache, so
+Then each document switches to its highest ready version: that version's
+chunks are upserted to Qdrant, Postgres marks it active, and the document's
+other points (older versions, chunks the version no longer has) are marked
+inactive and deleted. Upserts overwrite points with the same ID, so a run
+with nothing new leaves the collection as it was.
+
+Last, the chunk store is rewritten with every active version's chunks and
+vectors, for `InMemoryRetriever`. Vectors come from the embeddings cache, so
 a run with nothing new makes no embedding API calls.
+
+`--rebuild` ignores the manifest: it drops the collection and indexes every
+active version recorded in Postgres, including uploaded ones. Use it after
+changing the embedding model, or if the collection is lost.
 
 Never run at app startup: it calls a paid API and can take minutes.
 """
@@ -33,6 +43,7 @@ from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from qdrant_client import AsyncQdrantClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,7 +54,9 @@ from warden.models import AccessLevel, DocumentModel, DocumentVersionModel, Docu
 from warden.rag.chunking import Chunk, DocumentInfo, HFTokenCounter, TokenCounter, chunk_blocks
 from warden.rag.cleaning import clean_blocks
 from warden.rag.embeddings import Embedder, EmbeddingError, EmbedTask, build_embedding_client
+from warden.rag.index import PolicyIndex, PolicyIndexError
 from warden.rag.parsing import parse_document
+from warden.rag.sparse import Bm25Encoder
 from warden.rag.store import (
     read_version_chunks,
     store_dir,
@@ -118,6 +131,7 @@ class Outcome(StrEnum):
 class IngestReport:
     outcomes: dict[str, Outcome] = field(default_factory=dict)
     store_chunks: int = 0
+    index_points: int = 0
     embedding_api_calls: int = 0
     embedding_cache_hits: int = 0
     seconds: float = 0.0
@@ -133,11 +147,13 @@ async def ingest(
     cache_dir: Path,
     embedder: Embedder,
     counter: TokenCounter,
+    index: PolicyIndex,
     force: bool = False,
 ) -> IngestReport:
     started = time.perf_counter()
     calls_before, hits_before = embedder.api_calls, embedder.cache_hits
     entries = load_manifest(manifest_path)
+    await index.ensure_collection()
     report = IngestReport()
 
     ordered = sorted(entries, key=lambda entry: (entry.slug, entry.version))
@@ -155,20 +171,68 @@ async def ingest(
                 counter=counter,
                 force=force,
             )
-        await _activate_latest_ready(session, document)
-        await session.commit()
+        await _switch_active_version(
+            session, document, cache_dir=cache_dir, embedder=embedder, counter=counter, index=index
+        )
 
+    return await _finish(
+        report, session, cache_dir, embedder, index, started, calls_before, hits_before
+    )
+
+
+async def rebuild_index(
+    session: AsyncSession,
+    *,
+    cache_dir: Path,
+    embedder: Embedder,
+    counter: TokenCounter,
+    index: PolicyIndex,
+) -> IngestReport:
+    """Drop the collection and index every active version in Postgres.
+    Doesn't read the manifest or change which versions are active."""
+    started = time.perf_counter()
+    calls_before, hits_before = embedder.api_calls, embedder.cache_hits
+    await index.recreate_collection()
+    report = IngestReport()
+
+    for document, version in await _active_versions(session):
+        label = f"{document.slug} v{version.version}"
+        chunks = await _load_chunks(document, version, cache_dir, counter)
+        if chunks is None:
+            report.outcomes[label] = Outcome.FAILED
+            continue
+        vectors = await embedder.embed([c.embedding_text for c in chunks], EmbedTask.DOCUMENT)
+        await index.upsert(chunks, vectors)
+        report.outcomes[label] = Outcome.INDEXED
+
+    return await _finish(
+        report, session, cache_dir, embedder, index, started, calls_before, hits_before
+    )
+
+
+async def _finish(
+    report: IngestReport,
+    session: AsyncSession,
+    cache_dir: Path,
+    embedder: Embedder,
+    index: PolicyIndex,
+    started: float,
+    calls_before: int,
+    hits_before: int,
+) -> IngestReport:
     report.store_chunks = await _rebuild_store(session, cache_dir, embedder)
+    report.index_points = await index.count()
     report.embedding_api_calls = embedder.api_calls - calls_before
     report.embedding_cache_hits = embedder.cache_hits - hits_before
     report.seconds = time.perf_counter() - started
     logger.info(
         "Ingest finished in %.1fs: %d indexed, %d unchanged, %d failed; "
-        "%d chunks in store; %d embedding API calls, %d cache hits",
+        "%d points in Qdrant, %d chunks in store; %d embedding API calls, %d cache hits",
         report.seconds,
         report.count(Outcome.INDEXED),
         report.count(Outcome.SKIPPED),
         report.count(Outcome.FAILED),
+        report.index_points,
         report.store_chunks,
         report.embedding_api_calls,
         report.embedding_cache_hits,
@@ -266,7 +330,19 @@ def _parse_and_chunk(path: Path, info: DocumentInfo, counter: TokenCounter) -> l
     return chunks
 
 
-async def _activate_latest_ready(session: AsyncSession, document: DocumentModel) -> None:
+async def _switch_active_version(
+    session: AsyncSession,
+    document: DocumentModel,
+    *,
+    cache_dir: Path,
+    embedder: Embedder,
+    counter: TokenCounter,
+    index: PolicyIndex,
+) -> None:
+    """Make the document's newest ready version the one search serves:
+    index it, mark it active in Postgres, then remove every other point of
+    the document from Qdrant. With no ready version, the document's points
+    are all removed."""
     latest = await session.scalar(
         select(DocumentVersionModel)
         .where(
@@ -276,64 +352,152 @@ async def _activate_latest_ready(session: AsyncSession, document: DocumentModel)
         .order_by(DocumentVersionModel.version.desc())
         .limit(1)
     )
+    keep: list[str] = []
+    if latest is not None:
+        chunks = await _load_chunks(document, latest, cache_dir, counter)
+        if chunks is None:
+            # Leave Postgres and Qdrant as they are rather than serve nothing.
+            await session.commit()
+            return
+        vectors = await embedder.embed([c.embedding_text for c in chunks], EmbedTask.DOCUMENT)
+        keep = await index.upsert(chunks, vectors)
+
     document.active_version_id = latest.id if latest is not None else None
+    await session.commit()
+    removed = await index.retire_stale(document.slug, keep)
+    if removed:
+        logger.info("%s: removed %d points of other versions", document.slug, removed)
 
 
-async def _rebuild_store(session: AsyncSession, cache_dir: Path, embedder: Embedder) -> int:
+async def _active_versions(
+    session: AsyncSession,
+) -> list[tuple[DocumentModel, DocumentVersionModel]]:
     rows = await session.execute(
         select(DocumentModel, DocumentVersionModel)
         .join(DocumentVersionModel, DocumentModel.active_version_id == DocumentVersionModel.id)
         .order_by(DocumentModel.slug)
     )
-    chunks: list[Chunk] = []
-    for document, version in rows:
-        saved = read_version_chunks(version_chunks_path(cache_dir, document.slug, version.version))
-        if saved is None or saved[0] != version.content_hash:
+    return [(document, version) for document, version in rows]
+
+
+async def _load_chunks(
+    document: DocumentModel,
+    version: DocumentVersionModel,
+    cache_dir: Path,
+    counter: TokenCounter | None = None,
+) -> list[Chunk] | None:
+    """A ready version's chunks, from the cache. With a `counter`, a version
+    missing from the cache is re-parsed from its file, as long as the file
+    still has the hash Postgres recorded. None if neither works.
+
+    Title and access level come from the document row, so changing them
+    takes effect without re-parsing the file."""
+    label = f"{document.slug} v{version.version}"
+    path = version_chunks_path(cache_dir, document.slug, version.version)
+    saved = read_version_chunks(path)
+    if saved is not None and saved[0] == version.content_hash:
+        chunks = saved[1]
+    elif counter is None:
+        logger.warning("%s is active but its chunks aren't in the cache", label)
+        return None
+    else:
+        file = Path(version.file_path)
+        try:
+            content_hash = hashlib.sha256(await asyncio.to_thread(file.read_bytes)).hexdigest()
+        except OSError:
+            content_hash = None
+        if content_hash != version.content_hash:
             logger.warning(
-                "%s v%d is active but its chunks aren't in the cache. Run ingest with --force.",
-                document.slug,
-                version.version,
+                "%s isn't in the cache and %s is missing or changed. Run ingest without "
+                "--rebuild to index the file as it is now.",
+                label,
+                file,
             )
+            return None
+        info = DocumentInfo(document.slug, document.title, version.version, document.access_level)
+        try:
+            chunks = await asyncio.to_thread(_parse_and_chunk, file, info, counter)
+        except Exception:
+            logger.exception("%s failed", label)
+            return None
+        write_version_chunks(path, content_hash, chunks)
+
+    return [
+        dataclasses.replace(chunk, title=document.title, access_level=document.access_level)
+        for chunk in chunks
+    ]
+
+
+async def _rebuild_store(session: AsyncSession, cache_dir: Path, embedder: Embedder) -> int:
+    chunks: list[Chunk] = []
+    for document, version in await _active_versions(session):
+        loaded = await _load_chunks(document, version, cache_dir)
+        if loaded is None:
             continue
-        # Title and access level come from the document row, so changing
-        # them in the manifest takes effect without re-parsing the file.
-        chunks.extend(
-            dataclasses.replace(chunk, title=document.title, access_level=document.access_level)
-            for chunk in saved[1]
-        )
+        chunks.extend(loaded)
 
     vectors = await embedder.embed([chunk.embedding_text for chunk in chunks], EmbedTask.DOCUMENT)
     write_store(store_dir(cache_dir), chunks, vectors, embedder.model_id)
     return len(chunks)
 
 
-async def _run(settings: Settings, manifest_path: Path, force: bool) -> IngestReport:
+def build_index(settings: Settings, client: AsyncQdrantClient) -> PolicyIndex:
+    return PolicyIndex(
+        client,
+        settings.qdrant_collection,
+        dimensions=settings.embedding_dimensions,
+        sparse=Bm25Encoder(settings.models_dir),
+    )
+
+
+async def _run(
+    settings: Settings, manifest_path: Path, *, force: bool, rebuild: bool
+) -> IngestReport:
     client = build_embedding_client(settings)
     embedder = Embedder(client, settings.cache_dir, batch_size=settings.embedding_batch_size)
     counter = HFTokenCounter()
+    qdrant = AsyncQdrantClient(url=settings.qdrant_url)
+    index = build_index(settings, qdrant)
     try:
         async with SessionLocal() as session:
+            if rebuild:
+                return await rebuild_index(
+                    session,
+                    cache_dir=settings.cache_dir,
+                    embedder=embedder,
+                    counter=counter,
+                    index=index,
+                )
             return await ingest(
                 session,
                 manifest_path,
                 cache_dir=settings.cache_dir,
                 embedder=embedder,
                 counter=counter,
+                index=index,
                 force=force,
             )
     finally:
         await client.aclose()
+        await qdrant.close()
         await engine.dispose()
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     settings = get_settings()
     parser = argparse.ArgumentParser(description="Index the policy documents for retrieval.")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--force",
         action="store_true",
         help="re-parse and re-chunk every version, even unchanged ones "
         "(embeddings still come from the cache)",
+    )
+    mode.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="drop the Qdrant collection and re-index every active version in Postgres "
+        "(ignores the manifest)",
     )
     parser.add_argument(
         "--manifest",
@@ -344,8 +508,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     configure_logging(settings.log_level)
     try:
-        report = asyncio.run(_run(settings, args.manifest, args.force))
-    except (ManifestError, EmbeddingError) as exc:
+        report = asyncio.run(_run(settings, args.manifest, force=args.force, rebuild=args.rebuild))
+    except (ManifestError, EmbeddingError, PolicyIndexError) as exc:
         logger.error("%s", exc)
         sys.exit(1)
     if report.count(Outcome.FAILED):

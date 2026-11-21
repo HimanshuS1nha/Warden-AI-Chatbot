@@ -2,7 +2,10 @@
 
 import hashlib
 import re
+from collections import Counter
 from collections.abc import Sequence
+
+from qdrant_client.models import SparseVector
 
 from warden.rag.embeddings import EmbedTask, TransientEmbeddingError
 
@@ -37,6 +40,27 @@ class FakeEmbeddingClient:
             self.fail_times -= 1
             raise TransientEmbeddingError("429 RESOURCE_EXHAUSTED")
         return [bag_of_words(text) for text in texts]
+
+
+def _word_id(word: str) -> int:
+    return int(hashlib.sha256(word.encode()).hexdigest(), 16) % 2**31
+
+
+def term_frequencies(text: str) -> SparseVector:
+    counts = Counter(_word_id(word) for word in _WORD.findall(text.lower()))
+    return SparseVector(indices=list(counts), values=[float(n) for n in counts.values()])
+
+
+class FakeSparseEncoder:
+    """Raw word counts: BM25 without stemming, stopwords or length scaling."""
+
+    async def encode_documents(self, texts: Sequence[str]) -> list[SparseVector]:
+        return [term_frequencies(text) for text in texts]
+
+    async def encode_query(self, text: str) -> SparseVector:
+        # Like fastembed's BM25, a query term counts once however often it appears.
+        unique = sorted({_word_id(word) for word in _WORD.findall(text.lower())})
+        return SparseVector(indices=unique, values=[1.0] * len(unique))
 
 
 class WhitespaceTokenCounter:
